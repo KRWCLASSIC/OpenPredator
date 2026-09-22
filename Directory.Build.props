@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <!-- Common build settings across all projects -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    
+    <!-- Centralized artifacts output -->
+    <UseArtifactsOutput>true</UseArtifactsOutput>
+    <ArtifactsPath>$(MSBuildThisFileDirectory).temp\artifacts</ArtifactsPath>
+
+    <!-- Suppress known third-party COM reflection warnings from System.Management under NativeAOT -->
+    <NoWarn>$(NoWarn);IL2104;IL3053</NoWarn>
+  </PropertyGroup>
+</Project>

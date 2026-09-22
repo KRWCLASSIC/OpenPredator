@@ -1,0 +1,18 @@
+# Build & Output
+bin/
+obj/
+dist/
+.temp/
+artifacts/
+
+# IDE & Editor Files
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Decompilation & Reverse Engineering
+ghidra_decomp/

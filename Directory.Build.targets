@@ -1,0 +1,22 @@
+<Project>
+  <!-- Post-publish target to collect clean binaries into solution-level dist/ folder -->
+  <Target Name="CopyToDist" AfterTargets="Publish" Condition="'$(OutputType)' == 'Exe'">
+    <PropertyGroup>
+      <DistFolder Condition="'$(RuntimeIdentifier)' != ''">$(MSBuildThisFileDirectory)dist\$(RuntimeIdentifier)\</DistFolder>
+      <DistFolder Condition="'$(RuntimeIdentifier)' == ''">$(MSBuildThisFileDirectory)dist\$(TargetFramework)\</DistFolder>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <!-- Collect published executable and any standalone outputs -->
+      <PublishOutputs Include="$(PublishDir)**\*" />
+    </ItemGroup>
+
+    <Message Importance="high" Text="[Dist] Copying published $(TargetName) to $(DistFolder)" />
+    <Copy SourceFiles="@(PublishOutputs)"
+          DestinationFiles="@(PublishOutputs->'$(DistFolder)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Retries="3"
+          RetryDelayMilliseconds="500"
+          ContinueOnError="WarnAndContinue" />
+  </Target>
+</Project>

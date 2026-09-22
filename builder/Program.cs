@@ -1,0 +1,413 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace OpenPredator.Builder;
+
+public static class Program
+{
+    private static readonly string RootDir = FindRepoRoot();
+
+    private static string FindRepoRoot()
+    {
+        // 1. Check current working directory
+        string cwd = Directory.GetCurrentDirectory();
+        if (File.Exists(Path.Combine(cwd, "OpenPredator.sln")))
+        {
+            return cwd;
+        }
+
+        // 2. Search upward from AppContext.BaseDirectory
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            if (File.Exists(Path.Combine(dir.FullName, "OpenPredator.sln")))
+            {
+                return dir.FullName;
+            }
+            dir = dir.Parent;
+        }
+
+        return cwd;
+    }
+
+    public static async Task<int> Main(string[] args)
+    {
+        string rawTarget = args.Length > 0 ? args[0].Trim() : "all";
+
+        if (rawTarget.Equals("help", StringComparison.OrdinalIgnoreCase) ||
+            rawTarget.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
+            rawTarget.Equals("-h", StringComparison.OrdinalIgnoreCase))
+        {
+            PrintHelp();
+            return 0;
+        }
+
+        // Parse optional OS prefix (e.g. windows:all, linux:dev, win:installer)
+        string targetRid = GetDefaultRid();
+        string command = rawTarget;
+
+        int colonIdx = rawTarget.IndexOf(':');
+        if (colonIdx > 0)
+        {
+            string osPrefix = rawTarget.Substring(0, colonIdx).ToLowerInvariant();
+            command = rawTarget.Substring(colonIdx + 1).ToLowerInvariant();
+
+            targetRid = osPrefix switch
+            {
+                "windows" or "win" => "win-x64",
+                "linux" or "lin" => "linux-x64",
+                _ => GetDefaultRid()
+            };
+        }
+        else
+        {
+            command = rawTarget.ToLowerInvariant();
+        }
+
+        PrintHeader(command, targetRid);
+
+        if (OperatingSystem.IsWindows() && targetRid.StartsWith("linux", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("[Notice] Cross-OS NativeAOT compilation from Windows to Linux is not supported directly.");
+            Console.WriteLine("         To build Linux native binaries, please run './build.sh' inside WSL2, Linux, or a Linux Docker container.\n");
+            Console.ResetColor();
+            return 1;
+        }
+
+        if (OperatingSystem.IsLinux() && targetRid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("[Notice] Cross-OS NativeAOT compilation from Linux to Windows is not supported directly.");
+            Console.WriteLine("         To build Windows native binaries, please run '.\\build.bat' on a Windows machine.\n");
+            Console.ResetColor();
+            return 1;
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            int result = command switch
+            {
+                "all" => await BuildAllAsync(targetRid, isDebug: false),
+                "dev" => await BuildDevAsync(targetRid),
+                "installer" => await BuildInstallerAsync(targetRid),
+                "clean" => Clean(),
+                _ => HandleUnknownCommand(command)
+            };
+
+            stopwatch.Stop();
+            if (result == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n[Success] Build pipeline completed successfully in {stopwatch.Elapsed.TotalSeconds:F2}s.\n");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"\n[Failed] Build pipeline failed with exit code {result}.\n");
+                Console.ResetColor();
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[Error] Unhandled build exception: {ex.Message}\n");
+            Console.ResetColor();
+            return 1;
+        }
+    }
+
+    private static string GetDefaultRid()
+    {
+        if (OperatingSystem.IsWindows()) return "win-x64";
+        if (OperatingSystem.IsLinux()) return "linux-x64";
+        return RuntimeInformation.RuntimeIdentifier;
+    }
+
+    private static void PrintHeader(string command, string rid)
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("=========================================================");
+        Console.WriteLine("               OpenPredator Build Pipeline               ");
+        Console.WriteLine("=========================================================");
+        Console.ResetColor();
+        Console.WriteLine($"  Target Command : \x1b[1;37m{command}\x1b[0m");
+        Console.WriteLine($"  Target Runtime : \x1b[1;36m{rid}\x1b[0m");
+        Console.WriteLine($"  Repository Root: \x1b[90m{RootDir}\x1b[0m\n");
+    }
+
+    private static void PrintHelp()
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("=========================================================");
+        Console.WriteLine("               OpenPredator Build Runner                 ");
+        Console.WriteLine("=========================================================");
+        Console.ResetColor();
+        Console.WriteLine("\nUsage: build [target] [options]\n");
+        Console.WriteLine("Targets:");
+        Console.WriteLine("  all                 Release build of Service & CLI (excludes test suite) [Default]");
+        Console.WriteLine("  installer           Release build + Windows Inno Setup installer packaging");
+        Console.WriteLine("  dev                 Debug build including test suite (openpredator-testsuite)");
+        Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
+        Console.WriteLine("  help                Display this help screen\n");
+        Console.WriteLine("Target Prefix Syntax:");
+        Console.WriteLine("  windows:all         Build Release binaries targeting Windows (win-x64)");
+        Console.WriteLine("  windows:installer   Build and package Windows Setup installer");
+        Console.WriteLine("  windows:dev         Build Debug binaries + test suite for Windows");
+        Console.WriteLine("  linux:all           Build Release binaries targeting Linux (linux-x64)");
+        Console.WriteLine("  linux:dev           Build Debug binaries + test suite for Linux\n");
+    }
+
+    private static int HandleUnknownCommand(string command)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine($"Unknown build target: '{command}'");
+        Console.ResetColor();
+        PrintHelp();
+        return 1;
+    }
+
+    private static void EnsureProcessesTerminatedOnWindows()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Console.WriteLine("\x1b[90m[Pre-Build] Checking and stopping running daemons & processes...\x1b[0m");
+        RunProcessSilently("sc.exe", "stop OpenPredator");
+        RunProcessSilently("net.exe", "stop OpenPredator");
+        RunProcessSilently("sc.exe", "stop OpenPredatorService");
+        RunProcessSilently("net.exe", "stop OpenPredatorService");
+        RunProcessSilently("taskkill.exe", "/F /T /IM openpredator.exe");
+        RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-service.exe");
+        RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-testsuite.exe");
+        RunProcessSilently("taskkill.exe", "/F /IM OpenPredator-v1.0.0-win-x64-Setup.exe");
+        RunProcessSilently("taskkill.exe", "/F /IM Setup.exe");
+        Thread.Sleep(300);
+    }
+
+    private static async Task<int> BuildAllAsync(string rid, bool isDebug)
+    {
+        EnsureProcessesTerminatedOnWindows();
+
+        string config = isDebug ? "Debug" : "Release";
+        Console.WriteLine($"\x1b[1;36m>>> Compiling Core Components ({config}, {rid})...\x1b[0m\n");
+
+        // 1. Publish Service
+        int svcResult = await RunDotnetPublishAsync("src/OpenPredator.Service/OpenPredator.Service.csproj", config, rid);
+        if (svcResult != 0) return svcResult;
+
+        // 2. Publish CLI
+        int cliResult = await RunDotnetPublishAsync("src/OpenPredator.Cli/OpenPredator.Cli.csproj", config, rid);
+        if (cliResult != 0) return cliResult;
+
+        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Binaries published to: \x1b[1;37mdist/{rid}/\x1b[0m");
+        return 0;
+    }
+
+    private static async Task<int> BuildDevAsync(string rid)
+    {
+        EnsureProcessesTerminatedOnWindows();
+
+        Console.WriteLine($"\x1b[1;36m>>> Compiling Full Development Stack with Testing Suite (Debug, {rid})...\x1b[0m\n");
+
+        int res = await BuildAllAsync(rid, isDebug: true);
+        if (res != 0) return res;
+
+        // Publish Testing Suite
+        Console.WriteLine("\n\x1b[1;36m>>> Compiling OpenPredator Testing Suite...\x1b[0m");
+        int testSuiteRes = await RunDotnetPublishAsync("src/OpenPredator.TestingSuite/OpenPredator.TestingSuite.csproj", "Debug", rid);
+        if (testSuiteRes != 0) return testSuiteRes;
+
+        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Dev stack published to: \x1b[1;37mdist/{rid}/\x1b[0m");
+        return 0;
+    }
+
+    private static async Task<int> BuildInstallerAsync(string rid)
+    {
+        Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
+        int buildRes = await BuildAllAsync(rid, isDebug: false);
+        if (buildRes != 0) return buildRes;
+
+        Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging installer...\x1b[0m");
+
+        if (OperatingSystem.IsWindows() || rid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
+        {
+            string? isccPath = FindInnoSetupCompiler();
+            if (string.IsNullOrEmpty(isccPath) || !File.Exists(isccPath))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[Error] Inno Setup 6 (ISCC.exe) not found on system.");
+                Console.WriteLine("        Please install Inno Setup 6 or add ISCC.exe to your PATH.");
+                Console.ResetColor();
+                return 1;
+            }
+
+            Console.WriteLine($"Compiling Inno Setup script with: {isccPath}");
+            string issPath = Path.Combine(RootDir, "builder", "OpenPredatorSetup.iss");
+            int isccExit = await RunProcessAsync(isccPath, $"\"{issPath}\"", RootDir);
+            if (isccExit != 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[Error] Inno Setup packaging failed.");
+                Console.ResetColor();
+                return isccExit;
+            }
+
+            Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Installer package created in: \x1b[1;37mdist/installer/\x1b[0m");
+            return 0;
+        }
+        else
+        {
+            // Linux distribution tarball
+            string distDir = Path.Combine(RootDir, "dist", rid);
+            string outDir = Path.Combine(RootDir, "dist", "installer");
+            Directory.CreateDirectory(outDir);
+            string tarFile = Path.Combine(outDir, $"OpenPredator-{rid}.tar.gz");
+
+            Console.WriteLine($"Creating distribution archive: {tarFile}");
+            int tarExit = await RunProcessAsync("tar", $"-czf \"{tarFile}\" -C \"{distDir}\" .", RootDir);
+            if (tarExit == 0)
+            {
+                Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Linux archive created at: \x1b[1;37m{tarFile}\x1b[0m");
+                return 0;
+            }
+            return tarExit;
+        }
+    }
+
+    private static int Clean()
+    {
+        Console.WriteLine("\x1b[1;36m>>> Cleaning artifacts and build output directories...\x1b[0m\n");
+
+        string[] dirsToClean =
+        [
+            Path.Combine(RootDir, "dist"),
+            Path.Combine(RootDir, ".temp"),
+            Path.Combine(RootDir, "artifacts")
+        ];
+
+        foreach (var dir in dirsToClean)
+        {
+            if (Directory.Exists(dir))
+            {
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                    Console.WriteLine($"\x1b[1;32m[Removed]\x1b[0m {Path.GetRelativePath(RootDir, dir)}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"\x1b[1;33m[Warning]\x1b[0m Could not delete {dir}: {ex.Message}");
+                }
+            }
+        }
+
+        CleanBinAndObj(Path.Combine(RootDir, "src"));
+        CleanBinAndObj(Path.Combine(RootDir, "builder"));
+
+        Console.WriteLine("\n\x1b[1;32m[OK]\x1b[0m Clean operation complete.");
+        return 0;
+    }
+
+    private static void CleanBinAndObj(string startDir)
+    {
+        if (!Directory.Exists(startDir)) return;
+
+        foreach (var sub in Directory.GetDirectories(startDir, "*", SearchOption.AllDirectories))
+        {
+            string name = Path.GetFileName(sub);
+            if (name.Equals("bin", StringComparison.OrdinalIgnoreCase) || name.Equals("obj", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    Directory.Delete(sub, recursive: true);
+                    Console.WriteLine($"\x1b[1;32m[Removed]\x1b[0m {Path.GetRelativePath(RootDir, sub)}");
+                }
+                catch { }
+            }
+        }
+    }
+
+    private static async Task<int> RunDotnetPublishAsync(string projectRelativePath, string configuration, string rid)
+    {
+        string projectPath = Path.Combine(RootDir, projectRelativePath);
+        string args = $"publish \"{projectPath}\" -c {configuration} -r {rid} --self-contained true";
+
+        Console.WriteLine($"\x1b[90m$ dotnet {args}\x1b[0m");
+        return await RunProcessAsync("dotnet", args, RootDir);
+    }
+
+    private static async Task<int> RunProcessAsync(string fileName, string arguments, string workingDir)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = workingDir,
+            UseShellExecute = false,
+            RedirectStandardOutput = false,
+            RedirectStandardError = false
+        };
+
+        using var process = Process.Start(psi);
+        if (process == null) return -1;
+
+        await process.WaitForExitAsync();
+        return process.ExitCode;
+    }
+
+    private static void RunProcessSilently(string fileName, string arguments)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var proc = Process.Start(psi);
+            proc?.WaitForExit(2000);
+        }
+        catch { }
+    }
+
+    private static string? FindInnoSetupCompiler()
+    {
+        string[] candidates =
+        [
+            @"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            @"C:\Program Files\Inno Setup 6\ISCC.exe",
+            @"C:\Inno Setup 6\ISCC.exe"
+        ];
+
+        foreach (var path in candidates)
+        {
+            if (File.Exists(path)) return path;
+        }
+
+        // Check if ISCC is in PATH
+        string? envPath = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrEmpty(envPath))
+        {
+            foreach (var segment in envPath.Split(Path.PathSeparator))
+            {
+                string isccInPath = Path.Combine(segment.Trim(), "ISCC.exe");
+                if (File.Exists(isccInPath)) return isccInPath;
+            }
+        }
+
+        return "ISCC.exe";
+    }
+}
