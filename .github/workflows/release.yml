@@ -12,6 +12,7 @@ jobs:
   build-windows:
     name: Build Windows (Installer & Portable)
     runs-on: windows-latest
+    if: ${{ !contains(github.event.head_commit.message, '!!') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
   build-linux:
     name: Build Linux (Tarball & Portable)
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '!!') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -106,10 +108,12 @@ jobs:
         id: vars
         run: |
           # Extract version from Directory.Build.props
+          ASSEMBLY_VER=$(grep -oPm1 "(?<=<AssemblyVersion>)[^<]+" Directory.Build.props || echo "")
           VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.0.0")
+          DISPLAY_VER="${ASSEMBLY_VER:-$VERSION}"
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
-          TAG="v${VERSION}-preview.${GITHUB_RUN_NUMBER}"
-          TITLE="OpenPredator v${VERSION} (Preview #${GITHUB_RUN_NUMBER} - ${SHORT_SHA})"
+          TAG="${DISPLAY_VER}-preview-${SHORT_SHA}"
+          TITLE="OpenPredator Preview ${DISPLAY_VER} (${SHORT_SHA})"
           
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "title=${TITLE}" >> "$GITHUB_OUTPUT"

@@ -16,3 +16,5 @@ artifacts/
 
 # Decompilation & Reverse Engineering
 ghidra_decomp/
+
+.*

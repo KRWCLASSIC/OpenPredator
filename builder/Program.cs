@@ -375,13 +375,12 @@ public static class Program
             Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Installer package created in: \x1b[1;37mdist/installer/\x1b[0m");
             return 0;
         }
-        else
-        {
             // Linux distribution tarball
+            string version = GetCurrentVersion();
             string distDir = Path.Combine(RootDir, "dist", rid);
             string outDir = Path.Combine(RootDir, "dist", "installer");
             Directory.CreateDirectory(outDir);
-            string tarFile = Path.Combine(outDir, $"OpenPredator-{rid}.tar.gz");
+            string tarFile = Path.Combine(outDir, $"OpenPredator-v{version}-{rid}.tar.gz");
 
             Console.WriteLine($"Creating distribution archive: {tarFile}");
             int tarExit = await RunProcessAsync("tar", $"-czf \"{tarFile}\" -C \"{distDir}\" .", RootDir);
