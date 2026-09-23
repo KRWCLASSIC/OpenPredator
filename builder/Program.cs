@@ -98,6 +98,7 @@ public static class Program
                 "dev" => await BuildDevAsync(targetRid),
                 "installer" => await BuildInstallerAsync(targetRid),
                 "clean" => Clean(),
+                "version" or "ver" => HandleVersionCommand(args.Length > 1 ? args[1] : null),
                 _ => HandleUnknownCommand(command)
             };
 
@@ -158,6 +159,7 @@ public static class Program
         Console.WriteLine("  installer           Release build + Windows Inno Setup installer packaging");
         Console.WriteLine("  dev                 Debug build including test suite (openpredator-testsuite)");
         Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
+        Console.WriteLine("  version [new_ver]   Inspect or bump version across Directory.Build.props & Inno Setup");
         Console.WriteLine("  help                Display this help screen\n");
         Console.WriteLine("Target Prefix Syntax:");
         Console.WriteLine("  windows:all         Build Release binaries targeting Windows (win-x64)");
@@ -165,6 +167,88 @@ public static class Program
         Console.WriteLine("  windows:dev         Build Debug binaries + test suite for Windows");
         Console.WriteLine("  linux:all           Build Release binaries targeting Linux (linux-x64)");
         Console.WriteLine("  linux:dev           Build Debug binaries + test suite for Linux\n");
+    }
+
+    private static int HandleVersionCommand(string? newVersion)
+    {
+        string propsPath = Path.Combine(RootDir, "Directory.Build.props");
+        string issPath = Path.Combine(RootDir, "builder", "OpenPredatorSetup.iss");
+
+        if (string.IsNullOrWhiteSpace(newVersion))
+        {
+            Console.WriteLine("\x1b[1;36m=== Current Project Versions ===\x1b[0m\n");
+            if (File.Exists(propsPath))
+            {
+                var content = File.ReadAllText(propsPath);
+                var mVer = System.Text.RegularExpressions.Regex.Match(content, @"<Version>(.*?)</Version>");
+                var mAss = System.Text.RegularExpressions.Regex.Match(content, @"<AssemblyVersion>(.*?)</AssemblyVersion>");
+                Console.WriteLine($"  Directory.Build.props : Version={mVer.Groups[1].Value}, AssemblyVersion={mAss.Groups[1].Value}");
+            }
+            if (File.Exists(issPath))
+            {
+                var content = File.ReadAllText(issPath);
+                var mIss = System.Text.RegularExpressions.Regex.Match(content, @"#define MyAppVersion ""(.*?)""");
+                var mInfo = System.Text.RegularExpressions.Regex.Match(content, @"VersionInfoVersion=(.*)");
+                Console.WriteLine($"  OpenPredatorSetup.iss : MyAppVersion={mIss.Groups[1].Value}, VersionInfoVersion={mInfo.Groups[1].Value}");
+            }
+            Console.WriteLine("\n\x1b[90mTo update version: build version <new_version> (e.g. 1.0.1 or 1.0.1.1)\x1b[0m\n");
+            return 0;
+        }
+
+        newVersion = newVersion.Trim().TrimStart('v', 'V');
+        var parts = newVersion.Split('.');
+        if (parts.Length < 2)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"[Error] Invalid version format: '{newVersion}'. Expected at least Major.Minor (e.g. 1.0.1 or 1.0.1.1).");
+            Console.ResetColor();
+            return 1;
+        }
+
+        string semVer;
+        string fourPartVer;
+
+        if (parts.Length == 2)
+        {
+            semVer = $"{parts[0]}.{parts[1]}.0";
+            fourPartVer = $"{parts[0]}.{parts[1]}.0.0";
+        }
+        else if (parts.Length == 3)
+        {
+            semVer = $"{parts[0]}.{parts[1]}.{parts[2]}";
+            fourPartVer = $"{parts[0]}.{parts[1]}.{parts[2]}.0";
+        }
+        else
+        {
+            semVer = $"{parts[0]}.{parts[1]}.{parts[2]}";
+            fourPartVer = $"{parts[0]}.{parts[1]}.{parts[2]}.{parts[3]}";
+        }
+
+        Console.WriteLine($"\x1b[1;36m>>> Updating Project Version to {semVer} ({fourPartVer})...\x1b[0m\n");
+
+        // 1. Update Directory.Build.props
+        if (File.Exists(propsPath))
+        {
+            string content = File.ReadAllText(propsPath);
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"<Version>.*?</Version>", $"<Version>{semVer}</Version>");
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"<AssemblyVersion>.*?</AssemblyVersion>", $"<AssemblyVersion>{fourPartVer}</AssemblyVersion>");
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"<FileVersion>.*?</FileVersion>", $"<FileVersion>{fourPartVer}</FileVersion>");
+            File.WriteAllText(propsPath, content);
+            Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Updated {Path.GetRelativePath(RootDir, propsPath)}");
+        }
+
+        // 2. Update OpenPredatorSetup.iss
+        if (File.Exists(issPath))
+        {
+            string content = File.ReadAllText(issPath);
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"#define MyAppVersion "".*?""", $"#define MyAppVersion \"{semVer}\"");
+            content = System.Text.RegularExpressions.Regex.Replace(content, @"VersionInfoVersion=.*", $"VersionInfoVersion={fourPartVer}");
+            File.WriteAllText(issPath, content);
+            Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Updated {Path.GetRelativePath(RootDir, issPath)}");
+        }
+
+        Console.WriteLine($"\n\x1b[1;32m[Success]\x1b[0m All version fields updated to: \x1b[1;37m{semVer}\x1b[0m (Assembly/File: \x1b[1;36m{fourPartVer}\x1b[0m)\n");
+        return 0;
     }
 
     private static int HandleUnknownCommand(string command)
@@ -188,7 +272,7 @@ public static class Program
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator.exe");
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-service.exe");
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-testsuite.exe");
-        RunProcessSilently("taskkill.exe", "/F /IM OpenPredator-v1.0.0-win-x64-Setup.exe");
+        RunProcessSilently("taskkill.exe", "/F /FI \"IMAGENAME eq OpenPredator*Setup.exe\"");
         RunProcessSilently("taskkill.exe", "/F /IM Setup.exe");
         Thread.Sleep(300);
     }

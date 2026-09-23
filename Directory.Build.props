@@ -4,6 +4,19 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
+
+    <!-- Metadata embedded into compiled PE binaries (Properties -> Details) -->
+    <Authors>KRWCLASSIC</Authors>
+    <Company>KRWCLASSIC</Company>
+    <Product>OpenPredator</Product>
+    <Description>High-performance, zero-bloat hardware control suite for Acer gaming laptops</Description>
+    <Copyright>Copyright © 2026 KRWCLASSIC</Copyright>
+    <PackageProjectUrl>https://github.com/KRWCLASSIC/OpenPredator</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/KRWCLASSIC/OpenPredator</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.1</AssemblyVersion>
+    <FileVersion>1.0.0.1</FileVersion>
     
     <!-- Centralized artifacts output -->
     <UseArtifactsOutput>true</UseArtifactsOutput>

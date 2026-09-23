@@ -1,8 +1,8 @@
 ; OpenPredator Windows Inno Setup Script
 #define MyAppName "OpenPredator"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "OpenPredator Contributors"
-#define MyAppURL "https://github.com/OpenPredator/OpenPredator"
+#define MyAppPublisher "KRWCLASSIC"
+#define MyAppURL "https://github.com/KRWCLASSIC/OpenPredator"
 #define MyAppExeName "openpredator.exe"
 
 [Setup]
@@ -12,8 +12,15 @@ AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} v{#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
-AppUpdatesURL={#MyAppURL}
+AppSupportURL={#MyAppURL}/issues
+AppUpdatesURL={#MyAppURL}/releases
+AppContact={#MyAppPublisher}
+AppCopyright=Copyright (C) 2026 {#MyAppPublisher}
+VersionInfoDescription=OpenPredator - Hardware Control Suite for Acer Laptops
+VersionInfoProductName={#MyAppName}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoCopyright=Copyright (C) 2026 {#MyAppPublisher}
+VersionInfoVersion=1.0.0.1
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
