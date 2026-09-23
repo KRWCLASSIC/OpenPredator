@@ -1,0 +1,61 @@
+name: Pull Request CI
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Test Windows Build
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Setup Inno Setup
+        uses: chopsign/setup-innosetup@v1
+        with:
+          innosetup-version: '6.3.3'
+
+      - name: Run OpenPredator Windows Pack
+        shell: pwsh
+        run: |
+          dotnet run --project builder -- windows:pack
+
+  build-linux:
+    name: Test Linux Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT Linux Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev build-essential
+
+      - name: Run OpenPredator Linux Pack
+        run: |
+          chmod +x ./build.sh
+          ./build.sh linux:pack
+
+      - name: Run OpenPredator Linux Dev Build
+        run: |
+          ./build.sh linux:dev

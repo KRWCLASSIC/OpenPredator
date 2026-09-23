@@ -1,0 +1,133 @@
+name: Draft Pre-Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (Installer & Portable)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Setup Inno Setup
+        uses: chopsign/setup-innosetup@v1
+        with:
+          innosetup-version: '6.3.3'
+
+      - name: Build and Pack Windows Release
+        shell: pwsh
+        run: |
+          dotnet run --project builder -- windows:pack
+
+      - name: Stash Windows Release Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-windows
+          path: |
+            dist/installer/*.exe
+            dist/portable/*.zip
+          retention-days: 1
+
+  build-linux:
+    name: Build Linux (Tarball & Portable)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT Linux Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev build-essential
+
+      - name: Build and Pack Linux Release
+        run: |
+          dotnet run --project builder -- linux:pack
+
+      - name: Stash Linux Release Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-linux
+          path: |
+            dist/installer/*.tar.gz
+            dist/portable/*.zip
+          retention-days: 1
+
+  create-draft-release:
+    name: Create Draft Pre-Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Release Directory
+        run: mkdir -p release_assets
+
+      - name: Download Windows & Linux Assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: release_assets
+          merge-multiple: true
+
+      - name: Generate Unified SHA256 Checksums
+        working-directory: release_assets
+        run: |
+          echo "=== Generating Release SHA256 Manifest ==="
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determine Version & Tag
+        id: vars
+        run: |
+          # Extract version from Directory.Build.props
+          VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.0.0")
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          TAG="v${VERSION}-preview.${GITHUB_RUN_NUMBER}"
+          TITLE="OpenPredator v${VERSION} (Preview #${GITHUB_RUN_NUMBER} - ${SHORT_SHA})"
+          
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved Tag: ${TAG}"
+          echo "Resolved Title: ${TITLE}"
+
+      - name: Clean up older unpublished drafts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Searching for older unpublished draft releases ==="
+          DRAFT_IDS=$(gh api repos/${{ github.repository }}/releases --jq '.[] | select(.draft == true) | .id')
+          for id in $DRAFT_IDS; do
+            echo "Deleting older draft release ID: $id"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id" || true
+          done
+
+      - name: Create Draft Pre-Release on GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.title }}
+          draft: true
+          prerelease: true
+          files: release_assets/*
+          generate_release_notes: true

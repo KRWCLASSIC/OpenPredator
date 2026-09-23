@@ -45,7 +45,7 @@ OpenPredator's daemon is also wire-compatible with the OEM named pipe interface 
 
 | Operating System | Status | Notes |
 | :--- | :---: | :--- |
-| Windows 11 | ✅ | Tested on Windows 11 (24H2) |
+| Windows 11 | ✅ | Tested on Windows 11 (25H2) |
 | Windows 10 | ❓ | Expected working (uses identical ACPI WMI drivers) |
 | Linux | 🚧 | In active development (ACPI backend and Unix sockets implemented; physical testing in progress) |
 
@@ -149,14 +149,24 @@ build.bat
 # 2. Release build + package Windows Setup Installer (dist/installer/)
 build.bat installer
 
-# 3. Development debug build with interactive Testing Suite included
+# 3. Release build + package Portable standalone ZIP (dist/portable/)
+build.bat portable
+
+# 4. Full Release Packaging (Installer + Portable ZIP + SHA256SUMS manifest)
+build.bat pack
+
+# 5. Development debug build with interactive Testing Suite included
 build.bat dev
 
-# 4. Clean all build outputs, .temp caches, and bin/obj directories
+# 6. Clean all build outputs, .temp caches, and bin/obj directories
 build.bat clean
 
-# 5. Explicit OS target prefixes
-build.bat windows:all
+# 7. Version management
+build.bat version           # Inspect current version
+build.bat version 1.0.1     # Bump version across build props & installer
+
+# 8. Explicit OS target prefixes
+build.bat windows:pack
 build.bat linux:all
 ```
 

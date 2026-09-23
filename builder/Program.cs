@@ -1,7 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -96,7 +100,9 @@ public static class Program
             {
                 "all" => await BuildAllAsync(targetRid, isDebug: false),
                 "dev" => await BuildDevAsync(targetRid),
-                "installer" => await BuildInstallerAsync(targetRid),
+                "installer" => await BuildInstallerAsync(targetRid, skipBuild: false),
+                "portable" or "zip" => await BuildPortableAsync(targetRid, skipBuild: false),
+                "pack" or "package" => await BuildPackAsync(targetRid),
                 "clean" => Clean(),
                 "version" or "ver" => HandleVersionCommand(args.Length > 1 ? args[1] : null),
                 _ => HandleUnknownCommand(command)
@@ -134,6 +140,21 @@ public static class Program
         return RuntimeInformation.RuntimeIdentifier;
     }
 
+    private static string GetCurrentVersion()
+    {
+        string propsPath = Path.Combine(RootDir, "Directory.Build.props");
+        if (File.Exists(propsPath))
+        {
+            var content = File.ReadAllText(propsPath);
+            var m = System.Text.RegularExpressions.Regex.Match(content, @"<Version>(.*?)</Version>");
+            if (m.Success && !string.IsNullOrWhiteSpace(m.Groups[1].Value))
+            {
+                return m.Groups[1].Value.Trim();
+            }
+        }
+        return "1.0.0";
+    }
+
     private static void PrintHeader(string command, string rid)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
@@ -143,6 +164,7 @@ public static class Program
         Console.ResetColor();
         Console.WriteLine($"  Target Command : \x1b[1;37m{command}\x1b[0m");
         Console.WriteLine($"  Target Runtime : \x1b[1;36m{rid}\x1b[0m");
+        Console.WriteLine($"  Project Version: \x1b[1;32mv{GetCurrentVersion()}\x1b[0m");
         Console.WriteLine($"  Repository Root: \x1b[90m{RootDir}\x1b[0m\n");
     }
 
@@ -157,6 +179,8 @@ public static class Program
         Console.WriteLine("Targets:");
         Console.WriteLine("  all                 Release build of Service & CLI (excludes test suite) [Default]");
         Console.WriteLine("  installer           Release build + Windows Inno Setup installer packaging");
+        Console.WriteLine("  portable            Release build + Portable standalone ZIP packaging");
+        Console.WriteLine("  pack                Full release packaging (Installer + Portable ZIP + SHA256SUMS)");
         Console.WriteLine("  dev                 Debug build including test suite (openpredator-testsuite)");
         Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
         Console.WriteLine("  version [new_ver]   Inspect or bump version across Directory.Build.props & Inno Setup");
@@ -164,7 +188,8 @@ public static class Program
         Console.WriteLine("Target Prefix Syntax:");
         Console.WriteLine("  windows:all         Build Release binaries targeting Windows (win-x64)");
         Console.WriteLine("  windows:installer   Build and package Windows Setup installer");
-        Console.WriteLine("  windows:dev         Build Debug binaries + test suite for Windows");
+        Console.WriteLine("  windows:portable    Build and package Windows portable ZIP");
+        Console.WriteLine("  windows:pack        Full Windows release packaging");
         Console.WriteLine("  linux:all           Build Release binaries targeting Linux (linux-x64)");
         Console.WriteLine("  linux:dev           Build Debug binaries + test suite for Linux\n");
     }
@@ -314,13 +339,15 @@ public static class Program
         return 0;
     }
 
-    private static async Task<int> BuildInstallerAsync(string rid)
+    private static async Task<int> BuildInstallerAsync(string rid, bool skipBuild)
     {
-        Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
-        int buildRes = await BuildAllAsync(rid, isDebug: false);
-        if (buildRes != 0) return buildRes;
-
-        Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging installer...\x1b[0m");
+        if (!skipBuild)
+        {
+            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
+            int buildRes = await BuildAllAsync(rid, isDebug: false);
+            if (buildRes != 0) return buildRes;
+            Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging installer...\x1b[0m");
+        }
 
         if (OperatingSystem.IsWindows() || rid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
         {
@@ -365,6 +392,142 @@ public static class Program
             }
             return tarExit;
         }
+    }
+
+    private static async Task<int> BuildPortableAsync(string rid, bool skipBuild)
+    {
+        if (!skipBuild)
+        {
+            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
+            int buildRes = await BuildAllAsync(rid, isDebug: false);
+            if (buildRes != 0) return buildRes;
+            Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging portable ZIP...\x1b[0m");
+        }
+
+        string version = GetCurrentVersion();
+        string distBinDir = Path.Combine(RootDir, "dist", rid);
+        string portableOutDir = Path.Combine(RootDir, "dist", "portable");
+        Directory.CreateDirectory(portableOutDir);
+
+        string zipName = $"OpenPredator-v{version}-{rid}-portable.zip";
+        string zipPath = Path.Combine(portableOutDir, zipName);
+        string stagingDir = Path.Combine(RootDir, ".temp", "portable_staging");
+
+        if (Directory.Exists(stagingDir))
+        {
+            Directory.Delete(stagingDir, true);
+        }
+        Directory.CreateDirectory(stagingDir);
+
+        // 1. Copy Executables
+        if (Directory.Exists(distBinDir))
+        {
+            foreach (var file in Directory.GetFiles(distBinDir))
+            {
+                string fn = Path.GetFileName(file);
+                File.Copy(file, Path.Combine(stagingDir, fn), true);
+            }
+        }
+
+        // 2. Copy Documentation
+        string licenseSrc = Path.Combine(RootDir, "LICENSE");
+        if (File.Exists(licenseSrc))
+        {
+            File.Copy(licenseSrc, Path.Combine(stagingDir, "LICENSE.txt"), true);
+        }
+
+        string readmeSrc = Path.Combine(RootDir, "README.md");
+        if (File.Exists(readmeSrc))
+        {
+            File.Copy(readmeSrc, Path.Combine(stagingDir, "README.txt"), true);
+        }
+
+        // 3. Copy Windows Service Helper Scripts from builder directory
+        if (rid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
+        {
+            string installScriptSrc = Path.Combine(RootDir, "builder", "install-service.bat");
+            if (File.Exists(installScriptSrc))
+            {
+                File.Copy(installScriptSrc, Path.Combine(stagingDir, "install-service.bat"), true);
+            }
+
+            string uninstallScriptSrc = Path.Combine(RootDir, "builder", "uninstall-service.bat");
+            if (File.Exists(uninstallScriptSrc))
+            {
+                File.Copy(uninstallScriptSrc, Path.Combine(stagingDir, "uninstall-service.bat"), true);
+            }
+        }
+
+        // 4. Create Zip Archive
+        if (File.Exists(zipPath))
+        {
+            File.Delete(zipPath);
+        }
+
+        ZipFile.CreateFromDirectory(stagingDir, zipPath, CompressionLevel.Optimal, false);
+        Directory.Delete(stagingDir, true);
+
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Portable ZIP package created: \x1b[1;37mdist/portable/{zipName}\x1b[0m");
+        return 0;
+    }
+
+    private static async Task<int> BuildPackAsync(string rid)
+    {
+        Console.WriteLine("\x1b[1;36m[1/3] Compiling fresh release binaries...\x1b[0m");
+        int buildRes = await BuildAllAsync(rid, isDebug: false);
+        if (buildRes != 0) return buildRes;
+
+        Console.WriteLine("\n\x1b[1;36m[2/3] Packaging installer...\x1b[0m");
+        int instRes = await BuildInstallerAsync(rid, skipBuild: true);
+        if (instRes != 0) return instRes;
+
+        Console.WriteLine("\n\x1b[1;36m[3/3] Packaging portable ZIP...\x1b[0m");
+        int portRes = await BuildPortableAsync(rid, skipBuild: true);
+        if (portRes != 0) return portRes;
+
+        Console.WriteLine("\n\x1b[1;36m>>> Computing SHA256 Checksums for Release Artifacts...\x1b[0m");
+        GenerateSha256Sums();
+
+        return 0;
+    }
+
+    private static void GenerateSha256Sums()
+    {
+        string distDir = Path.Combine(RootDir, "dist");
+        if (!Directory.Exists(distDir)) return;
+
+        var entries = new List<(string RelativePath, string Hash)>();
+
+        foreach (var file in Directory.GetFiles(distDir, "*.*", SearchOption.AllDirectories))
+        {
+            string ext = Path.GetExtension(file).ToLowerInvariant();
+            if (ext is not (".exe" or ".zip" or ".gz" or ".tar" or ".deb" or ".rpm")) continue;
+            if (Path.GetFileName(file).Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase)) continue;
+
+            byte[] bytes = File.ReadAllBytes(file);
+            byte[] hashBytes = SHA256.HashData(bytes);
+            string hexHash = Convert.ToHexStringLower(hashBytes);
+
+            string relPath = Path.GetRelativePath(distDir, file).Replace('\\', '/');
+            entries.Add((relPath, hexHash));
+        }
+
+        var sb = new StringBuilder();
+        Console.WriteLine("\n\x1b[1;37m--------------------------------------------------------------------------------\x1b[0m");
+        Console.WriteLine("\x1b[1;36mSHA256 CHECKSUMS\x1b[0m");
+        Console.WriteLine("\x1b[1;37m--------------------------------------------------------------------------------\x1b[0m");
+
+        foreach (var (relPath, hash) in entries)
+        {
+            string line = $"{hash}  {relPath}";
+            sb.AppendLine(line);
+            Console.WriteLine($"  {hash}  \x1b[1;33m{relPath}\x1b[0m");
+        }
+        Console.WriteLine("\x1b[1;37m--------------------------------------------------------------------------------\x1b[0m\n");
+
+        string sumsFile = Path.Combine(distDir, "SHA256SUMS.txt");
+        File.WriteAllText(sumsFile, sb.ToString());
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Saved checksums manifest: \x1b[1;37mdist/SHA256SUMS.txt\x1b[0m");
     }
 
     private static int Clean()
