@@ -90,9 +90,14 @@ jobs:
           path: release_assets
           merge-multiple: true
 
-      - name: Generate Unified SHA256 Checksums
+      - name: Prepare Assets & Generate SHA256 Manifest
         working-directory: release_assets
         run: |
+          echo "=== Flattening Staged Files ==="
+          find . -mindepth 2 -type f -exec mv -t . {} + || true
+          find . -type d -empty -delete || true
+          echo "=== Staged Release Assets ==="
+          ls -la
           echo "=== Generating Release SHA256 Manifest ==="
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
