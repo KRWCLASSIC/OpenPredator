@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using OpenPredator.Core.Services;
 
 namespace OpenPredator.Core.Backends.Linux;
@@ -140,22 +141,16 @@ public static class BmofReader
         try
         {
             string json = File.ReadAllText(cachePath);
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("AcerGamingFunction", out var gamingElem))
+            var cache = JsonSerializer.Deserialize(json, BmofJsonContext.Default.BmofCache);
+            if (cache != null)
             {
-                foreach (var prop in gamingElem.EnumerateObject())
+                if (cache.AcerGamingFunction != null)
                 {
-                    if (prop.Value.TryGetUInt32(out uint id)) _gamingMethodMap[prop.Name] = id;
+                    foreach (var kvp in cache.AcerGamingFunction) _gamingMethodMap[kvp.Key] = kvp.Value;
                 }
-            }
-
-            if (root.TryGetProperty("APGeAction", out var genericElem))
-            {
-                foreach (var prop in genericElem.EnumerateObject())
+                if (cache.APGeAction != null)
                 {
-                    if (prop.Value.TryGetUInt32(out uint id)) _genericMethodMap[prop.Name] = id;
+                    foreach (var kvp in cache.APGeAction) _genericMethodMap[kvp.Key] = kvp.Value;
                 }
             }
 
@@ -171,17 +166,13 @@ public static class BmofReader
     {
         try
         {
-            var data = new Dictionary<string, Dictionary<string, uint>>
-            {
-                ["AcerGamingFunction"] = _gamingMethodMap,
-                ["APGeAction"] = _genericMethodMap
-            };
-
-            string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+            var cache = new BmofCache(_gamingMethodMap, _genericMethodMap);
+            string json = JsonSerializer.Serialize(cache, BmofJsonContext.Default.BmofCache);
             File.WriteAllText(cachePath, json);
         }
         catch { }
     }
+
 
     #region Pure C# DoubleSpace (DS-0-2) Decompressor
 
@@ -545,4 +536,15 @@ public static class BmofReader
     }
 
     #endregion
+}
+
+internal sealed record BmofCache(
+    Dictionary<string, uint> AcerGamingFunction,
+    Dictionary<string, uint> APGeAction
+);
+
+[JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(BmofCache))]
+internal partial class BmofJsonContext : JsonSerializerContext
+{
 }

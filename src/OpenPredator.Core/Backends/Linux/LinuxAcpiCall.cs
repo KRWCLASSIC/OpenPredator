@@ -8,29 +8,14 @@ namespace OpenPredator.Core.Backends.Linux;
 /// <summary>
 /// Direct Linux ACPI transport for Acer laptops.
 /// Evaluates WMI ACPI methods directly via /proc/acpi/call using method IDs dynamically resolved by BmofReader.
+/// Discovers ACPI PNP0C14 device path dynamically from sysfs with zero hardcoded fallbacks.
 /// </summary>
 public static class LinuxAcpiCall
 {
     private const string AcpiCallPath = "/proc/acpi/call";
 
-    private static readonly string[] GamingCandidates =
-    {
-        @"\_SB.WMID.WMBC",
-        @"\_SB.AMW0.WMBC",
-        @"\_SB.PCI0.LPCB.EC0.WMBC",
-        @"\WMBC"
-    };
-
-    private static readonly string[] GenericCandidates =
-    {
-        @"\_SB.WMID.WMBA",
-        @"\_SB.AMW0.WMBA",
-        @"\_SB.PCI0.LPCB.EC0.WMBA",
-        @"\WMBA"
-    };
-
-    private static string? _resolvedGamingPath = null;
-    private static string? _resolvedGenericPath = null;
+    private static string? _acpiBasePath = null;
+    private static bool _discoveryAttempted = false;
     private static readonly object _syncLock = new();
 
     public static bool IsAvailable => File.Exists(AcpiCallPath);
@@ -40,12 +25,19 @@ public static class LinuxAcpiCall
         uint? methodId = BmofReader.GetGamingMethodId(methodName);
         if (methodId == null)
         {
-            AppLogger.Warning($"[LinuxAcpiCall] Unknown or undiscovered AcerGamingFunction method '{methodName}'");
+            AppLogger.Warn($"[LinuxAcpiCall] Unknown or undiscovered AcerGamingFunction method '{methodName}'");
             return 0;
         }
 
-        string path = ResolvePath(ref _resolvedGamingPath, GamingCandidates, 1, 0x0101);
-        return Evaluate(path, 0, methodId.Value, input);
+        string? basePath = GetAcpiDeviceBasePath();
+        if (basePath == null)
+        {
+            AppLogger.Error("[LinuxAcpiCall] ACPI device path undiscovered in sysfs. Cannot execute AcerGamingFunction.");
+            return 0;
+        }
+
+        string fullPath = $"{basePath}.WMBC";
+        return Evaluate(fullPath, 0, methodId.Value, input);
     }
 
     public static ulong ExecuteGenericMethod(string methodName, ulong input)
@@ -53,43 +45,80 @@ public static class LinuxAcpiCall
         uint? methodId = BmofReader.GetGenericMethodId(methodName);
         if (methodId == null)
         {
-            AppLogger.Warning($"[LinuxAcpiCall] Unknown or undiscovered APGeAction method '{methodName}'");
+            AppLogger.Warn($"[LinuxAcpiCall] Unknown or undiscovered APGeAction method '{methodName}'");
             return 0;
         }
 
-        string path = ResolvePath(ref _resolvedGenericPath, GenericCandidates, 1, 0x0207);
-        return Evaluate(path, 0, methodId.Value, input);
+        string? basePath = GetAcpiDeviceBasePath();
+        if (basePath == null)
+        {
+            AppLogger.Error("[LinuxAcpiCall] ACPI device path undiscovered in sysfs. Cannot execute APGeAction.");
+            return 0;
+        }
+
+        string fullPath = $"{basePath}.WMBA";
+        return Evaluate(fullPath, 0, methodId.Value, input);
     }
 
-    private static string ResolvePath(ref string? cachedPath, string[] candidates, uint probeMethodId, ulong probeInput)
+    private static string? GetAcpiDeviceBasePath()
     {
-        if (cachedPath != null) return cachedPath;
+        if (_discoveryAttempted) return _acpiBasePath;
 
         lock (_syncLock)
         {
-            if (cachedPath != null) return cachedPath;
+            if (_discoveryAttempted) return _acpiBasePath;
+            _discoveryAttempted = true;
 
-            if (IsAvailable)
+            // 1. Discover via /sys/bus/wmi/devices/*/firmware_node/path
+            const string wmiPath = "/sys/bus/wmi/devices";
+            if (Directory.Exists(wmiPath))
             {
-                foreach (var candidate in candidates)
+                foreach (var dir in Directory.GetDirectories(wmiPath))
                 {
-                    try
+                    string fnPath = Path.Combine(dir, "firmware_node", "path");
+                    if (File.Exists(fnPath))
                     {
-                        ulong testVal = EvaluateDirect(candidate, 0, probeMethodId, probeInput);
-                        if (testVal > 0)
+                        try
                         {
-                            cachedPath = candidate;
-                            AppLogger.Info($"[LinuxAcpiCall] Detected active ACPI path: {candidate}");
-                            return candidate;
+                            string path = File.ReadAllText(fnPath).Trim();
+                            if (!string.IsNullOrEmpty(path))
+                            {
+                                _acpiBasePath = path;
+                                AppLogger.Info($"[LinuxAcpiCall] Discovered ACPI device path from WMI sysfs: {path}");
+                                return _acpiBasePath;
+                            }
                         }
+                        catch { }
                     }
-                    catch { }
                 }
             }
 
-            // Fallback to default Acer System Bus path
-            cachedPath = candidates[0];
-            return cachedPath;
+            // 2. Discover via /sys/bus/acpi/devices/PNP0C14:*/path
+            const string acpiPath = "/sys/bus/acpi/devices";
+            if (Directory.Exists(acpiPath))
+            {
+                foreach (var dir in Directory.GetDirectories(acpiPath, "PNP0C14*"))
+                {
+                    string pFile = Path.Combine(dir, "path");
+                    if (File.Exists(pFile))
+                    {
+                        try
+                        {
+                            string path = File.ReadAllText(pFile).Trim();
+                            if (!string.IsNullOrEmpty(path))
+                            {
+                                _acpiBasePath = path;
+                                AppLogger.Info($"[LinuxAcpiCall] Discovered ACPI device path from ACPI sysfs: {path}");
+                                return _acpiBasePath;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            AppLogger.Error("[LinuxAcpiCall] Failed to locate PNP0C14 ACPI device path in sysfs (/sys/bus/wmi or /sys/bus/acpi).");
+            return null;
         }
     }
 
