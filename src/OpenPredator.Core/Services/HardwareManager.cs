@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using OpenPredator.Core.Backends;
 using OpenPredator.Core.Enums;
@@ -11,6 +12,16 @@ public sealed class HardwareManager
     private static readonly Lazy<HardwareManager> _instance = new(() => new HardwareManager());
     public static HardwareManager Instance => _instance.Value;
 
+    private static bool _experimentalCoolBoostUnlocked = false;
+    private static bool _preferredAutoCoolBoost = false;
+
+    public static bool IsExperimentalCoolBoostUnlocked() => _experimentalCoolBoostUnlocked;
+
+    public static void SetExperimentalCoolBoostUnlocked(bool unlocked)
+    {
+        _experimentalCoolBoostUnlocked = unlocked;
+    }
+
     public IHardwareBackend Backend { get; private set; }
 
     public FanConfig CurrentFanConfig { get; set; } = ConfigManager.Instance.Current.Fan;
@@ -21,6 +32,7 @@ public sealed class HardwareManager
     public HardwareManager()
     {
         Backend = CreateBestBackend();
+        _preferredAutoCoolBoost = ConfigManager.Instance.Current.Fan.CoolBoost;
     }
 
     public static DeviceCapabilities DetectCapabilities()
@@ -151,7 +163,7 @@ public sealed class HardwareManager
 
     public async Task<bool> SetFanModeAsync(
         FanMode mode,
-        bool coolBoost = false,
+        bool? coolBoost = null,
         int cpuPercentage = 50,
         int gpuPercentage = 50,
         bool cpuAuto = true,
@@ -160,16 +172,36 @@ public sealed class HardwareManager
         FanMode? gpuMode = null,
         bool persist = true)
     {
+        bool isAuto = (mode == FanMode.Auto && (cpuMode == null || cpuMode == FanMode.Auto) && (gpuMode == null || gpuMode == FanMode.Auto));
+        bool isExp = IsExperimentalCoolBoostUnlocked();
+
+        if (isAuto && coolBoost.HasValue)
+        {
+            _preferredAutoCoolBoost = coolBoost.Value;
+        }
+
+        bool effectiveCoolBoost;
+        if (!isAuto && !isExp)
+        {
+            // Restricted to Auto mode unless experimental unlock is explicitly active
+            effectiveCoolBoost = false;
+        }
+        else
+        {
+            effectiveCoolBoost = coolBoost ?? (isAuto ? _preferredAutoCoolBoost : CurrentFanConfig.CoolBoost);
+        }
+
         CurrentFanConfig = CurrentFanConfig with
         {
             Mode = mode,
-            CoolBoost = coolBoost,
+            CoolBoost = effectiveCoolBoost,
             CpuPercentage = cpuPercentage,
             GpuPercentage = gpuPercentage,
             CpuCustomAuto = cpuAuto,
             GpuCustomAuto = gpuAuto
         };
-        bool ok = await Backend.SetFanModeAsync(mode, coolBoost, cpuPercentage, gpuPercentage, cpuAuto, gpuAuto, cpuMode, gpuMode);
+        AppLogger.Info($"[HardwareManager] SetFanModeAsync: Mode={mode}, EffectiveCoolBoost={effectiveCoolBoost}, CpuMode={cpuMode} ({cpuPercentage}%), GpuMode={gpuMode} ({gpuPercentage}%)");
+        bool ok = await Backend.SetFanModeAsync(mode, effectiveCoolBoost, cpuPercentage, gpuPercentage, cpuAuto, gpuAuto, cpuMode, gpuMode);
         if (ok && persist)
         {
             var cfg = ConfigManager.Instance.Current;
@@ -178,8 +210,37 @@ public sealed class HardwareManager
         return ok;
     }
 
+    public async Task<FanMode> GetFanModeAsync()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                ulong res = await Backend.InvokeGamingFunctionAsync("GetGamingFanBehavior", 0UL);
+                uint cpuMode = (uint)((res >> 16) & 0x3);
+                uint gpuMode = (uint)((res >> 22) & 0x3);
+                if (cpuMode == 1 && gpuMode == 1) return FanMode.Auto;
+                if (cpuMode == 2 && gpuMode == 2) return FanMode.Max;
+                if (cpuMode > 0 || gpuMode > 0) return FanMode.Custom;
+            }
+            catch { }
+        }
+        return CurrentFanConfig.Mode;
+    }
+
     public async Task<bool> SetCoolBoostAsync(bool enabled, bool persist = true)
     {
+        FanMode currentMode = await GetFanModeAsync();
+        AppLogger.Info($"[HardwareManager] SetCoolBoostAsync: Enabled={enabled}, CurrentMode={currentMode}, ExpUnlocked={IsExperimentalCoolBoostUnlocked()}");
+        if (enabled && currentMode != FanMode.Auto && !IsExperimentalCoolBoostUnlocked())
+        {
+            AppLogger.Warn($"[HardwareManager] SetCoolBoostAsync rejected: CoolBoost enabled requested in {currentMode} without experimental unlock.");
+            return false;
+        }
+        if (currentMode == FanMode.Auto)
+        {
+            _preferredAutoCoolBoost = enabled;
+        }
         CurrentFanConfig = CurrentFanConfig with { CoolBoost = enabled };
         bool ok = await Backend.SetCoolBoostAsync(enabled);
         if (ok && persist)

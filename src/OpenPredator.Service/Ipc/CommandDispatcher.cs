@@ -59,15 +59,22 @@ public class CommandDispatcher
                         : BinaryPrimitives.ReadUInt32LittleEndian(args[0]);
                     int fanIndex = (int)(fanSpeedData & 0xFF);
                     int percentage = (int)((fanSpeedData >> 8) & 0xFF);
+                    AppLogger.Info($"[CommandDispatcher] GamingFanGroupSpeedSet: Fan={fanIndex}, Pct={percentage}%");
                     await _hardware.Backend.SetFanSpeedAsync(fanIndex, percentage);
                     if (fanIndex == 1)
                     {
-                        _ = _hardware.ApplyFanConfigAsync(_hardware.CurrentFanConfig with { CpuPercentage = percentage, CpuCustomAuto = false });
+                        _hardware.CurrentFanConfig = _hardware.CurrentFanConfig with { CpuPercentage = percentage, CpuCustomAuto = false };
                     }
                     else if (fanIndex == 2 || fanIndex == 4)
                     {
-                        _ = _hardware.ApplyFanConfigAsync(_hardware.CurrentFanConfig with { GpuPercentage = percentage, GpuCustomAuto = false });
+                        _hardware.CurrentFanConfig = _hardware.CurrentFanConfig with { GpuPercentage = percentage, GpuCustomAuto = false };
                     }
+                    try
+                    {
+                        var cfg = ConfigManager.Instance.Current;
+                        ConfigManager.Instance.Save(cfg with { Fan = _hardware.CurrentFanConfig });
+                    }
+                    catch { }
                 }
                 return PacketSerializer.SerializeResponse(1);
 
@@ -76,6 +83,7 @@ public class CommandDispatcher
                 {
                     uint modeVal = BinaryPrimitives.ReadUInt32LittleEndian(args[0]);
                     var powerMode = (PowerMode)Math.Clamp(modeVal, 0, 3);
+                    AppLogger.Info($"[CommandDispatcher] SetOperationMode: {powerMode}");
                     await _hardware.SetPowerModeAsync(powerMode);
                 }
                 return PacketSerializer.SerializeResponse(1);
@@ -132,6 +140,12 @@ public class CommandDispatcher
                     uint settingVal = BinaryPrimitives.ReadUInt32LittleEndian(args[0]);
                     uint settingId = settingVal & 0xFF;
                     uint value = (settingVal >> 8) & 0xFF;
+                    AppLogger.Info($"[CommandDispatcher] WmiSetGamingMiscSetting: ID=0x{settingId:X2}, Value={value}");
+                    if (settingId == 0xCB)
+                    {
+                        HardwareManager.SetExperimentalCoolBoostUnlocked(value == 1);
+                        return PacketSerializer.SerializeResponse(0);
+                    }
                     await _hardware.Backend.SetMiscSettingAsync(settingId, value);
                 }
                 return PacketSerializer.SerializeResponse(0);
@@ -140,6 +154,23 @@ public class CommandDispatcher
                 uint querySettingId = args.Count > 0 && args[0].Length >= 4
                     ? BinaryPrimitives.ReadUInt32LittleEndian(args[0])
                     : 0;
+                if (querySettingId == 0xCB)
+                {
+                    ulong unlocked = HardwareManager.IsExperimentalCoolBoostUnlocked() ? 1UL : 0UL;
+                    return PacketSerializer.SerializeResponse(unlocked);
+                }
+                if (querySettingId == 0xCF)
+                {
+                    FanMode mode = await _hardware.GetFanModeAsync();
+                    ulong modeVal = mode switch
+                    {
+                        FanMode.Auto => 1UL,
+                        FanMode.Max => 2UL,
+                        FanMode.Custom => 3UL,
+                        _ => 1UL
+                    };
+                    return PacketSerializer.SerializeResponse(modeVal);
+                }
                 ulong miscVal = await _hardware.Backend.GetMiscSettingAsync(querySettingId);
                 return PacketSerializer.SerializeResponse(miscVal);
 
@@ -154,8 +185,8 @@ public class CommandDispatcher
                     if ((wmiInput & 0xFFFF) == 7)
                     {
                         bool cb = ((wmiInput >> 16) & 1) == 1;
-                        await _hardware.SetCoolBoostAsync(cb);
-                        return PacketSerializer.SerializeResponse(0);
+                        bool ok = await _hardware.SetCoolBoostAsync(cb);
+                        return PacketSerializer.SerializeResponse(ok ? 0 : 1);
                     }
 
                     // Keyboard Backlight (Function ID 2)
@@ -225,10 +256,12 @@ public class CommandDispatcher
 
     private async Task HandleFanBehaviorAsync(ulong behavior)
     {
+        AppLogger.Info($"[CommandDispatcher] HandleFanBehaviorAsync: 0x{behavior:X16}");
         // Check CoolBoost (bit 4 or (enabled << 8) | 4)
         if ((behavior & 0xFF) == 4)
         {
             bool coolBoost = ((behavior >> 8) & 1) == 1;
+            AppLogger.Info($"[CommandDispatcher] FanBehavior CoolBoost bit: Enabled={coolBoost}");
             await _hardware.SetCoolBoostAsync(coolBoost);
             return;
         }
@@ -253,6 +286,12 @@ public class CommandDispatcher
             CpuCustomAuto = (cpuMode == FanMode.Auto),
             GpuCustomAuto = (gpuMode == FanMode.Auto)
         };
+        try
+        {
+            var cfg = ConfigManager.Instance.Current;
+            ConfigManager.Instance.Save(cfg with { Fan = _hardware.CurrentFanConfig });
+        }
+        catch { }
     }
 
     private async Task HandleRgbSettingAsync(byte[] data)

@@ -7,6 +7,7 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenPredator.Core.Protocol;
+using OpenPredator.Core.Services;
 
 namespace OpenPredator.Service.Ipc;
 
@@ -38,7 +39,7 @@ public class NamedPipeServer
 
     private async Task RunWindowsPipeLoopAsync(CancellationToken ct)
     {
-        Console.WriteLine($"[IPC] Starting Named Pipe Server: \\\\.\\pipe\\{PipeName}");
+        AppLogger.Info($"[IPC] Starting Named Pipe Server: \\\\.\\pipe\\{PipeName}");
 
         while (!ct.IsCancellationRequested)
         {
@@ -94,7 +95,7 @@ public class NamedPipeServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[IPC] Pipe listener error: {ex.Message}");
+                AppLogger.Error($"[IPC] Pipe listener error: {ex.Message}", ex);
                 await Task.Delay(500, ct);
             }
         }
@@ -102,7 +103,7 @@ public class NamedPipeServer
 
     private async Task RunUnixSocketLoopAsync(CancellationToken ct)
     {
-        Console.WriteLine($"[IPC] Starting Unix Domain Socket Server: {LinuxSocketPath}");
+        AppLogger.Info($"[IPC] Starting Unix Domain Socket Server: {LinuxSocketPath}");
 
         if (File.Exists(LinuxSocketPath))
         {
@@ -141,7 +142,7 @@ public class NamedPipeServer
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[IPC] Unix socket error: {ex.Message}");
+                AppLogger.Error($"[IPC] Unix socket error: {ex.Message}", ex);
                 await Task.Delay(500, ct);
             }
         }
@@ -149,29 +150,44 @@ public class NamedPipeServer
 
     private async Task HandleClientAsync(Stream stream, CancellationToken ct)
     {
-        using (stream)
+        AppLogger.Info("[IPC] Client connected to pipe.");
+        try
         {
-            byte[] buffer = new byte[4096];
-            while (!ct.IsCancellationRequested)
+            using (stream)
             {
-                int bytesRead;
-                try
+                byte[] buffer = new byte[4096];
+                while (!ct.IsCancellationRequested)
                 {
-                    bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
-                    if (bytesRead <= 0) break;
-                }
-                catch
-                {
-                    break;
-                }
+                    int bytesRead;
+                    try
+                    {
+                        bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
+                        if (bytesRead <= 0) break;
+                    }
+                    catch
+                    {
+                        break;
+                    }
 
-                if (PacketSerializer.TryDeserializeRequest(buffer.AsSpan(0, bytesRead), out var command, out var args))
-                {
-                    byte[] response = await _dispatcher.DispatchAsync(command, args);
-                    await stream.WriteAsync(response, 0, response.Length, ct);
-                    await stream.FlushAsync(ct);
+                    if (PacketSerializer.TryDeserializeRequest(buffer.AsSpan(0, bytesRead), out var command, out var args))
+                    {
+                        try
+                        {
+                            byte[] response = await _dispatcher.DispatchAsync(command, args);
+                            await stream.WriteAsync(response, 0, response.Length, ct);
+                            await stream.FlushAsync(ct);
+                        }
+                        catch (Exception ex)
+                        {
+                            AppLogger.Error($"[IPC] Error processing command {command}", ex);
+                        }
+                    }
                 }
             }
+        }
+        finally
+        {
+            AppLogger.Info("[IPC] Client disconnected from pipe.");
         }
     }
 }

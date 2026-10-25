@@ -14,7 +14,9 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        AppLogger.AttachCrashHandler("service");
         string action = args.Length > 0 ? args[0].ToLowerInvariant() : "--run";
+        AppLogger.Info($"OpenPredator Service Main invoked with action: '{action}'");
 
         switch (action)
         {
@@ -49,13 +51,17 @@ public static class Program
 
     private static async Task RunDaemonWorkerAsync(CancellationToken ct)
     {
+        AppLogger.Info("RunDaemonWorkerAsync starting...");
         var hardware = HardwareManager.Instance;
+        AppLogger.Info($"Hardware Backend initialized: {hardware.Backend.BackendName}");
 
         // Restore saved settings on startup immediately
         await ConfigManager.Instance.ApplyToHardwareAsync(hardware);
+        AppLogger.Info("Saved configuration applied to hardware.");
 
         var pipeServer = new NamedPipeServer();
         pipeServer.Start();
+        AppLogger.Info("NamedPipeServer started.");
 
         try
         {

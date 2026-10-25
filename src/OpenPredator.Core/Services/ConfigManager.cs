@@ -45,7 +45,13 @@ public sealed class ConfigManager
     {
         if (OperatingSystem.IsWindows())
         {
-            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OpenPredator", "config.json");
+            string commonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "OpenPredator", "config.json");
+            string userPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "OpenPredator", "config.json");
+
+            if (File.Exists(commonPath)) return commonPath;
+            if (File.Exists(userPath)) return userPath;
+
+            return commonPath;
         }
         
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "openpredator", "config.json");

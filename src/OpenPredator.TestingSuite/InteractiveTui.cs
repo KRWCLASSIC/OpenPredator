@@ -64,6 +64,7 @@ public class InteractiveTui
     private string _acerServiceStatus = "UNKNOWN";
     private string _openPredatorStatus = "UNKNOWN";
     private bool _coolBoost = false;
+    private bool _coolBoostExperimental = false;
     private bool _lcdOverdrive = false;
     private bool _winKeyLock = false;
     private bool _kbTimeout = true;
@@ -87,6 +88,7 @@ public class InteractiveTui
         _caps = HardwareManager.Instance.Capabilities;
 
         var cfg = ConfigManager.Instance.Current;
+        _coolBoostExperimental = HardwareManager.IsExperimentalCoolBoostUnlocked();
         _coolBoost = cfg.Fan.CoolBoost;
         _cpuCustomPct = cfg.Fan.CpuPercentage;
         _gpuCustomPct = cfg.Fan.GpuPercentage;
@@ -293,12 +295,18 @@ public class InteractiveTui
         fanBranch.Children.Add(new TreeNode
         {
             Id = "fan_coolboost",
-            Title = "CoolBoost Fan RPM Offset",
+            Title = "CoolBoost Technology (Auto Mode)",
             Type = TreeNodeType.Toggle,
             GetIsActive = () => _coolBoost,
             GetValueText = () => _coolBoost ? "[ENABLED ]" : "[DISABLED]",
             OnActivateAsync = async () =>
             {
+                bool isAuto = (_cpuFanMode == FanMode.Auto && _gpuFanMode == FanMode.Auto);
+                if (!_coolBoost && !isAuto && !_coolBoostExperimental)
+                {
+                    _statusMessage = "[LOCKED] CoolBoost in Custom/Max requires Experimental Unlock! Toggle 'CoolBoost Experimental Unlock' below.";
+                    return;
+                }
                 _coolBoost = !_coolBoost;
                 await ApplyCoolBoostAsync(_coolBoost);
                 bool verified = _client.IsConnected
@@ -306,6 +314,25 @@ public class InteractiveTui
                     : await HardwareManager.Instance.GetCoolBoostAsync();
                 _coolBoost = verified;
                 _statusMessage = $"CoolBoost toggled {(_coolBoost ? "ON" : "OFF")} | Hardware Verified: {(verified ? "[ENABLED]" : "[DISABLED]")}";
+            }
+        });
+
+        fanBranch.Children.Add(new TreeNode
+        {
+            Id = "fan_coolboost_exp",
+            Title = "CoolBoost Experimental Unlock (Custom / Max)",
+            Type = TreeNodeType.Toggle,
+            GetIsActive = () => _coolBoostExperimental,
+            GetValueText = () => _coolBoostExperimental ? "[UNLOCKED]" : "[LOCKED  ]",
+            OnActivateAsync = async () =>
+            {
+                _coolBoostExperimental = !_coolBoostExperimental;
+                if (_client.IsConnected)
+                {
+                    await _client.SetExperimentalCoolBoostAsync(_coolBoostExperimental);
+                }
+                HardwareManager.SetExperimentalCoolBoostUnlocked(_coolBoostExperimental);
+                _statusMessage = $"Experimental CoolBoost: {(_coolBoostExperimental ? "UNLOCKED (Custom/Max permitted)" : "LOCKED (Auto only)")}";
             }
         });
 
@@ -902,6 +929,7 @@ public class InteractiveTui
             case '2':
                 _cpuFanMode = FanMode.Max;
                 _gpuFanMode = FanMode.Max;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = "All Fans set to MAX (100%).";
                 break;
@@ -909,6 +937,7 @@ public class InteractiveTui
             case '3':
                 _cpuFanMode = FanMode.Custom;
                 _gpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"All Fans set to CUSTOM (CPU: {_cpuCustomPct}%, GPU: {_gpuCustomPct}%).";
                 break;
@@ -916,6 +945,7 @@ public class InteractiveTui
             case '[':
                 _cpuCustomPct = Math.Clamp(_cpuCustomPct - 5, 0, 100);
                 _cpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"CPU Fan target: {_cpuCustomPct}% [GPU: {_gpuCustomPct}%].";
                 break;
@@ -923,6 +953,7 @@ public class InteractiveTui
             case ']':
                 _cpuCustomPct = Math.Clamp(_cpuCustomPct + 5, 0, 100);
                 _cpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"CPU Fan target: {_cpuCustomPct}% [GPU: {_gpuCustomPct}%].";
                 break;
@@ -931,6 +962,7 @@ public class InteractiveTui
             case '{':
                 _gpuCustomPct = Math.Clamp(_gpuCustomPct - 5, 0, 100);
                 _gpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"GPU Fan target: {_gpuCustomPct}% [CPU: {_cpuCustomPct}%].";
                 break;
@@ -939,6 +971,7 @@ public class InteractiveTui
             case '}':
                 _gpuCustomPct = Math.Clamp(_gpuCustomPct + 5, 0, 100);
                 _gpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"GPU Fan target: {_gpuCustomPct}% [CPU: {_cpuCustomPct}%].";
                 break;
@@ -949,6 +982,7 @@ public class InteractiveTui
                 _gpuCustomPct = Math.Clamp(_gpuCustomPct - 5, 0, 100);
                 _cpuFanMode = FanMode.Custom;
                 _gpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"Both Fans decreased: CPU={_cpuCustomPct}%, GPU={_gpuCustomPct}%.";
                 break;
@@ -959,11 +993,18 @@ public class InteractiveTui
                 _gpuCustomPct = Math.Clamp(_gpuCustomPct + 5, 0, 100);
                 _cpuFanMode = FanMode.Custom;
                 _gpuFanMode = FanMode.Custom;
+                if (!_coolBoostExperimental) _coolBoost = false;
                 await ApplyFanStateAsync();
                 _statusMessage = $"Both Fans increased: CPU={_cpuCustomPct}%, GPU={_gpuCustomPct}%.";
                 break;
 
             case 'C':
+                bool isAutoMode = (_cpuFanMode == FanMode.Auto && _gpuFanMode == FanMode.Auto);
+                if (!_coolBoost && !isAutoMode && !_coolBoostExperimental)
+                {
+                    _statusMessage = "[LOCKED] CoolBoost in Custom/Max requires Experimental Unlock! Toggle 'CoolBoost Experimental Unlock' in menu.";
+                    break;
+                }
                 _coolBoost = !_coolBoost;
                 await ApplyCoolBoostAsync(_coolBoost);
                 bool cbVer = _client.IsConnected ? await _client.GetCoolBoostAsync() : await HardwareManager.Instance.GetCoolBoostAsync();
@@ -1102,6 +1143,7 @@ public class InteractiveTui
         {
             await HardwareManager.Instance.SetCoolBoostAsync(enabled);
         }
+        await ApplyFanStateAsync();
     }
 
     private async Task ApplyPowerModeAsync(PowerMode mode)

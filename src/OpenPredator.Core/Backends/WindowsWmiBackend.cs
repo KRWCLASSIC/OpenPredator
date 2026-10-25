@@ -12,6 +12,7 @@ public class WindowsWmiBackend : IHardwareBackend
     private const string WmiNamespace = @"\\.\root\wmi";
     private const string GamingClassName = "AcerGamingFunction";
     private const string GenericClassName = "APGeAction";
+    private FanMode _lastMode = FanMode.Auto;
 
     public string BackendName => "Windows WMI (root\\wmi -> AcerGamingFunction)";
     public bool IsSupported => OperatingSystem.IsWindows();
@@ -134,11 +135,15 @@ public class WindowsWmiBackend : IHardwareBackend
                     InvokeGamingFunctionSync("SetGamingFanSpeed", (100UL << 8) | 2);
                 }
 
+                _lastMode = mode;
+
                 // Table selection (3 for CoolBoost or Max, 1 for normal/custom, 0 for Auto)
                 ulong targetTable = (coolBoost || (effectiveCpuMode == FanMode.Max && effectiveGpuMode == FanMode.Max)) ? 3UL : 1UL;
                 InvokeGamingFunctionSync("SetGamingFanTable", targetTable);
 
-                SetCoolBoostAsync(coolBoost).GetAwaiter().GetResult();
+                // Apply CoolBoost bit to APGeAction directly without clobbering SetGamingFanTable
+                ulong cbInput = ((coolBoost ? 1UL : 0UL) << 16) | 7UL;
+                InvokeGenericMethodSync("SetFunction", cbInput);
 
                 return true;
             }
@@ -159,8 +164,8 @@ public class WindowsWmiBackend : IHardwareBackend
                 ulong input = ((enabled ? 1UL : 0UL) << 16) | 7UL;
                 InvokeGenericMethodSync("SetFunction", input);
 
-                // 2. Table selection (3 for CoolBoost / Extreme, 1 for normal)
-                ulong targetTable = enabled ? 3UL : 1UL;
+                // 2. Table selection: Table 3 is high-performance/CoolBoost table. If disabling CoolBoost, preserve Table 3 if in Max mode.
+                ulong targetTable = (enabled || _lastMode == FanMode.Max) ? 3UL : 1UL;
                 InvokeGamingFunctionSync("SetGamingFanTable", targetTable);
 
                 return true;

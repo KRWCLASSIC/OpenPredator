@@ -40,39 +40,18 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        string rawTarget = args.Length > 0 ? args[0].Trim() : "all";
+        var options = ParseCommandLine(args);
 
-        if (rawTarget.Equals("help", StringComparison.OrdinalIgnoreCase) ||
-            rawTarget.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
-            rawTarget.Equals("-h", StringComparison.OrdinalIgnoreCase))
+        if (options.Command.Equals("help", StringComparison.OrdinalIgnoreCase))
         {
             PrintHelp();
             return 0;
         }
 
-        // Parse optional OS prefix (e.g. windows:all, linux:dev, win:installer)
-        string targetRid = GetDefaultRid();
-        string command = rawTarget;
+        string targetRid = options.TargetRid;
+        string command = options.Command;
 
-        int colonIdx = rawTarget.IndexOf(':');
-        if (colonIdx > 0)
-        {
-            string osPrefix = rawTarget.Substring(0, colonIdx).ToLowerInvariant();
-            command = rawTarget.Substring(colonIdx + 1).ToLowerInvariant();
-
-            targetRid = osPrefix switch
-            {
-                "windows" or "win" => "win-x64",
-                "linux" or "lin" => "linux-x64",
-                _ => GetDefaultRid()
-            };
-        }
-        else
-        {
-            command = rawTarget.ToLowerInvariant();
-        }
-
-        PrintHeader(command, targetRid);
+        PrintHeader(command, targetRid, options.TargetProject, options.IsDebug);
 
         if (OperatingSystem.IsWindows() && targetRid.StartsWith("linux", StringComparison.OrdinalIgnoreCase))
         {
@@ -98,13 +77,14 @@ public static class Program
         {
             int result = command switch
             {
-                "all" => await BuildAllAsync(targetRid, isDebug: false),
+                "project" => await BuildProjectCommandAsync(options.TargetProject!, targetRid, options.IsDebug),
+                "all" => await BuildAllAsync(targetRid, isDebug: options.IsDebug),
                 "dev" => await BuildDevAsync(targetRid),
                 "installer" => await BuildInstallerAsync(targetRid, skipBuild: false),
                 "portable" or "zip" => await BuildPortableAsync(targetRid, skipBuild: false),
                 "pack" or "package" => await BuildPackAsync(targetRid),
                 "clean" => Clean(),
-                "version" or "ver" => HandleVersionCommand(args.Length > 1 ? args[1] : null),
+                "version" or "ver" => HandleVersionCommand(options.ExtraArg),
                 _ => HandleUnknownCommand(command)
             };
 
@@ -152,18 +132,42 @@ public static class Program
                 return m.Groups[1].Value.Trim();
             }
         }
-        return "1.0.0";
+        return "Undefined";
     }
 
-    private static void PrintHeader(string command, string rid)
+    private static string GetFourPartVersion()
+    {
+        string propsPath = Path.Combine(RootDir, "Directory.Build.props");
+        if (File.Exists(propsPath))
+        {
+            var content = File.ReadAllText(propsPath);
+            var m = System.Text.RegularExpressions.Regex.Match(content, @"<AssemblyVersion>(.*?)</AssemblyVersion>");
+            if (m.Success && !string.IsNullOrWhiteSpace(m.Groups[1].Value))
+            {
+                return m.Groups[1].Value.Trim();
+            }
+        }
+        string ver = GetCurrentVersion();
+        return ver == "Undefined" ? "0.0.0.0" : $"{ver}.0";
+    }
+
+    private static void PrintHeader(string command, string rid, string? targetProject = null, bool isDebug = false)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
         Console.WriteLine("=========================================================");
         Console.WriteLine("               OpenPredator Build Pipeline               ");
         Console.WriteLine("=========================================================");
         Console.ResetColor();
-        Console.WriteLine($"  Target Command : \x1b[1;37m{command}\x1b[0m");
+
+        string displayCommand = targetProject != null
+            ? $"project:{targetProject} (targeted)"
+            : command;
+
+        string displayConfig = isDebug ? "Debug" : "Release";
+
+        Console.WriteLine($"  Target Command : \x1b[1;37m{displayCommand}\x1b[0m");
         Console.WriteLine($"  Target Runtime : \x1b[1;36m{rid}\x1b[0m");
+        Console.WriteLine($"  Configuration  : \x1b[1;35m{displayConfig}\x1b[0m");
         Console.WriteLine($"  Project Version: \x1b[1;32mv{GetCurrentVersion()}\x1b[0m");
         Console.WriteLine($"  Repository Root: \x1b[90m{RootDir}\x1b[0m\n");
     }
@@ -177,7 +181,9 @@ public static class Program
         Console.ResetColor();
         Console.WriteLine("\nUsage: build [target] [options]\n");
         Console.WriteLine("Targets:");
-        Console.WriteLine("  all                 Release build of Service & CLI (excludes test suite) [Default]");
+        Console.WriteLine("  all                 Release build of core components (Service, CLI, GUI) [Default]");
+        Console.WriteLine("  project:<name>      Targeted rebuild of single application (e.g. project:Gui, project:Service)");
+        Console.WriteLine("                      Resolves shorthand to OpenPredator.<Name> and outputs to dist/<rid>/");
         Console.WriteLine("  installer           Release build + Windows Inno Setup installer packaging");
         Console.WriteLine("  portable            Release build + Portable standalone ZIP packaging");
         Console.WriteLine("  pack                Full release packaging (Installer + Portable ZIP + SHA256SUMS)");
@@ -185,13 +191,388 @@ public static class Program
         Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
         Console.WriteLine("  version [new_ver]   Inspect or bump version across Directory.Build.props & Inno Setup");
         Console.WriteLine("  help                Display this help screen\n");
-        Console.WriteLine("Target Prefix Syntax:");
-        Console.WriteLine("  windows:all         Build Release binaries targeting Windows (win-x64)");
-        Console.WriteLine("  windows:installer   Build and package Windows Setup installer");
-        Console.WriteLine("  windows:portable    Build and package Windows portable ZIP");
-        Console.WriteLine("  windows:pack        Full Windows release packaging");
-        Console.WriteLine("  linux:all           Build Release binaries targeting Linux (linux-x64)");
-        Console.WriteLine("  linux:dev           Build Debug binaries + test suite for Linux\n");
+        Console.WriteLine("Target Prefix & Targeted Build Examples:");
+        Console.WriteLine("  build project:Gui         Quick release build of OpenPredator.Gui -> dist/win-x64/");
+        Console.WriteLine("  build project:Gui dev     Quick debug build of OpenPredator.Gui");
+        Console.WriteLine("  build project:Service     Quick release build of OpenPredator.Service");
+        Console.WriteLine("  build project:Cli         Quick release build of OpenPredator.Cli");
+        Console.WriteLine("  build project:TestingSuite Quick build of test suite");
+        Console.WriteLine("  windows:project:Gui       Targeted Windows build for OpenPredator.Gui");
+        Console.WriteLine("  linux:project:Cli         Targeted Linux build for OpenPredator.Cli\n");
+    }
+
+    private sealed record CommandLineOptions(
+        string Command,
+        string TargetRid,
+        string? TargetProject,
+        bool IsDebug,
+        string? ExtraArg
+    );
+
+    private sealed record ResolvedProjectInfo(
+        string CanonicalName,
+        string RelativeCsprojPath,
+        string FullCsprojPath,
+        string ExeName,
+        bool IsApplication
+    );
+
+    private static readonly Dictionary<string, string> ProjectAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["gui"] = "OpenPredator.Gui",
+        ["opensense"] = "OpenPredator.Gui",
+        ["sense"] = "OpenPredator.Gui",
+        ["ui"] = "OpenPredator.Gui",
+        ["openpredatorgui"] = "OpenPredator.Gui",
+        ["openpredator.gui"] = "OpenPredator.Gui",
+
+        ["service"] = "OpenPredator.Service",
+        ["svc"] = "OpenPredator.Service",
+        ["daemon"] = "OpenPredator.Service",
+        ["openpredatorservice"] = "OpenPredator.Service",
+        ["openpredator.service"] = "OpenPredator.Service",
+
+        ["cli"] = "OpenPredator.Cli",
+        ["console"] = "OpenPredator.Cli",
+        ["cmd"] = "OpenPredator.Cli",
+        ["openpredatorcli"] = "OpenPredator.Cli",
+        ["openpredator.cli"] = "OpenPredator.Cli",
+
+        ["testingsuite"] = "OpenPredator.TestingSuite",
+        ["testsuite"] = "OpenPredator.TestingSuite",
+        ["tui"] = "OpenPredator.TestingSuite",
+        ["test"] = "OpenPredator.TestingSuite",
+        ["tests"] = "OpenPredator.TestingSuite",
+        ["openpredatortestingsuite"] = "OpenPredator.TestingSuite",
+        ["openpredator.testingsuite"] = "OpenPredator.TestingSuite",
+    };
+
+    private static bool IsProjectNameOrAlias(string token)
+    {
+        if (ProjectAliases.ContainsKey(token)) return true;
+        if (token.StartsWith("OpenPredator.", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    private static CommandLineOptions ParseCommandLine(string[] args)
+    {
+        string targetRid = GetDefaultRid();
+        string? command = null;
+        string? targetProject = null;
+        bool isDebug = false;
+        string? extraArg = null;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            string token = args[i].Trim();
+            if (string.IsNullOrEmpty(token)) continue;
+
+            token = token.Trim('"', '\'');
+
+            if (token.Equals("help", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("-h", StringComparison.OrdinalIgnoreCase) ||
+                token == "/?")
+            {
+                return new CommandLineOptions("help", targetRid, null, false, null);
+            }
+
+            // Check for OS prefixes: windows:..., win:..., linux:..., lin:...
+            int colonIdx = token.IndexOf(':');
+            if (colonIdx > 0)
+            {
+                string prefix = token.Substring(0, colonIdx).ToLowerInvariant();
+                if (prefix is "windows" or "win")
+                {
+                    targetRid = "win-x64";
+                    token = token.Substring(colonIdx + 1);
+                }
+                else if (prefix is "linux" or "lin")
+                {
+                    targetRid = "linux-x64";
+                    token = token.Substring(colonIdx + 1);
+                }
+            }
+
+            // Check for --rid or -r
+            if (token.Equals("--rid", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("-r", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                {
+                    targetRid = args[++i].Trim();
+                }
+                continue;
+            }
+            if (token.StartsWith("--rid=", StringComparison.OrdinalIgnoreCase))
+            {
+                targetRid = token.Substring(6).Trim();
+                continue;
+            }
+
+            // Check for configuration flags
+            if (token.Equals("dev", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("debug", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("--debug", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("--dev", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("-d", StringComparison.OrdinalIgnoreCase))
+            {
+                isDebug = true;
+                if (command == null) command = "dev";
+                continue;
+            }
+            if (token.Equals("release", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("--release", StringComparison.OrdinalIgnoreCase))
+            {
+                isDebug = false;
+                continue;
+            }
+            if (token.Equals("-c", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("--configuration", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                {
+                    string cfg = args[++i].Trim();
+                    isDebug = cfg.Equals("Debug", StringComparison.OrdinalIgnoreCase) ||
+                              cfg.Equals("Dev", StringComparison.OrdinalIgnoreCase);
+                }
+                continue;
+            }
+
+            // Check for project flag: project:<Name>, --project:<Name>, --project=<Name>, -p:<Name>, etc.
+            string? projCandidate = null;
+            if (token.StartsWith("project:", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("project:".Length);
+            }
+            else if (token.StartsWith("--project:", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("--project:".Length);
+            }
+            else if (token.StartsWith("--project=", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("--project=".Length);
+            }
+            else if (token.StartsWith("project=", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("project=".Length);
+            }
+            else if (token.StartsWith("-p:", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("-p:".Length);
+            }
+            else if (token.StartsWith("-p=", StringComparison.OrdinalIgnoreCase))
+            {
+                projCandidate = token.Substring("-p=".Length);
+            }
+            else if (token.Equals("--project", StringComparison.OrdinalIgnoreCase) ||
+                     token.Equals("-p", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                {
+                    projCandidate = args[++i].Trim();
+                }
+            }
+
+            if (projCandidate != null)
+            {
+                int subColon = projCandidate.IndexOf(':');
+                if (subColon > 0)
+                {
+                    string subConfig = projCandidate.Substring(subColon + 1);
+                    projCandidate = projCandidate.Substring(0, subColon);
+                    if (subConfig.Equals("dev", StringComparison.OrdinalIgnoreCase) ||
+                        subConfig.Equals("debug", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isDebug = true;
+                    }
+                }
+                targetProject = projCandidate;
+                command = "project";
+                continue;
+            }
+
+            string lowerToken = token.ToLowerInvariant();
+            if (lowerToken is "all" or "installer" or "portable" or "zip" or "pack" or "package" or "clean")
+            {
+                command = lowerToken;
+                continue;
+            }
+
+            if (lowerToken is "version" or "ver")
+            {
+                command = "version";
+                if (i + 1 < args.Length && !args[i + 1].StartsWith('-'))
+                {
+                    extraArg = args[++i].Trim();
+                }
+                continue;
+            }
+
+            if (IsProjectNameOrAlias(token))
+            {
+                targetProject = token;
+                command = "project";
+                continue;
+            }
+
+            command ??= lowerToken;
+        }
+
+        if (!string.IsNullOrEmpty(targetProject))
+        {
+            command = "project";
+        }
+
+        command ??= "all";
+
+        return new CommandLineOptions(command, targetRid, targetProject, isDebug, extraArg);
+    }
+
+    private static ResolvedProjectInfo? ResolveProject(string rawInput, out string? errorMessage)
+    {
+        errorMessage = null;
+        string clean = rawInput.Trim().Trim('"', '\'');
+        if (clean.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+        {
+            clean = Path.GetFileNameWithoutExtension(clean);
+        }
+
+        // 1. Check known aliases
+        if (ProjectAliases.TryGetValue(clean, out string? canonical))
+        {
+            clean = canonical;
+        }
+
+        // 2. Candidate naming: automatically prepend OpenPredator. if not present
+        string candidateName = clean.StartsWith("OpenPredator.", StringComparison.OrdinalIgnoreCase)
+            ? clean
+            : $"OpenPredator.{clean}";
+
+        string srcDir = Path.Combine(RootDir, "src");
+        if (!Directory.Exists(srcDir))
+        {
+            errorMessage = $"Directory not found: {srcDir}";
+            return null;
+        }
+
+        DirectoryInfo? matchedDir = null;
+        foreach (var dir in new DirectoryInfo(srcDir).GetDirectories())
+        {
+            if (dir.Name.Equals(candidateName, StringComparison.OrdinalIgnoreCase) ||
+                dir.Name.Equals(clean, StringComparison.OrdinalIgnoreCase))
+            {
+                matchedDir = dir;
+                break;
+            }
+        }
+
+        if (matchedDir == null)
+        {
+            errorMessage = $"Could not resolve project '{rawInput}'. Expected directory under src/ (e.g. src/{candidateName}).\n" +
+                           $"Available application targets:\n" +
+                           $"  - Gui (OpenPredator.Gui / OpenSense)\n" +
+                           $"  - Service (OpenPredator.Service)\n" +
+                           $"  - Cli (OpenPredator.Cli)\n" +
+                           $"  - TestingSuite (OpenPredator.TestingSuite)";
+            return null;
+        }
+
+        string csprojPath = Path.Combine(matchedDir.FullName, $"{matchedDir.Name}.csproj");
+        if (!File.Exists(csprojPath))
+        {
+            var anyCsproj = Directory.GetFiles(matchedDir.FullName, "*.csproj");
+            if (anyCsproj.Length > 0)
+            {
+                csprojPath = anyCsproj[0];
+            }
+            else
+            {
+                errorMessage = $"No .csproj found in {matchedDir.FullName}";
+                return null;
+            }
+        }
+
+        string csprojContent = File.ReadAllText(csprojPath);
+        bool isApp = csprojContent.Contains("<OutputType>Exe</OutputType>", StringComparison.OrdinalIgnoreCase) ||
+                     csprojContent.Contains("<OutputType>WinExe</OutputType>", StringComparison.OrdinalIgnoreCase);
+
+        if (!isApp)
+        {
+            errorMessage = $"'{matchedDir.Name}' is a class library, not an application.\n" +
+                           $"Targeted rebuilds only build executable application projects:\n" +
+                           $"  - Gui (OpenPredator.Gui / OpenSense)\n" +
+                           $"  - Service (OpenPredator.Service)\n" +
+                           $"  - Cli (OpenPredator.Cli)\n" +
+                           $"  - TestingSuite (OpenPredator.TestingSuite)";
+            return null;
+        }
+
+        string targetName = matchedDir.Name;
+        var mTarget = System.Text.RegularExpressions.Regex.Match(csprojContent, @"<TargetName>(.*?)</TargetName>");
+        if (mTarget.Success && !string.IsNullOrWhiteSpace(mTarget.Groups[1].Value))
+        {
+            targetName = mTarget.Groups[1].Value.Trim();
+        }
+
+        string exeName = OperatingSystem.IsWindows() ? $"{targetName}.exe" : targetName;
+        string relativeCsproj = Path.GetRelativePath(RootDir, csprojPath).Replace('\\', '/');
+
+        return new ResolvedProjectInfo(
+            CanonicalName: matchedDir.Name,
+            RelativeCsprojPath: relativeCsproj,
+            FullCsprojPath: csprojPath,
+            ExeName: exeName,
+            IsApplication: true
+        );
+    }
+
+    private static void TerminateProcessForProject(ResolvedProjectInfo project)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        Console.WriteLine($"\x1b[90m[Pre-Build] Checking running instances of {project.ExeName}...\x1b[0m");
+        RunProcessSilently("taskkill.exe", $"/F /T /IM {project.ExeName}");
+
+        if (project.CanonicalName.Contains("Service", StringComparison.OrdinalIgnoreCase))
+        {
+            RunProcessSilently("sc.exe", "stop OpenPredator");
+            RunProcessSilently("net.exe", "stop OpenPredator");
+            RunProcessSilently("sc.exe", "stop OpenPredatorService");
+            RunProcessSilently("net.exe", "stop OpenPredatorService");
+        }
+
+        Thread.Sleep(200);
+    }
+
+    private static async Task<int> BuildProjectCommandAsync(string targetProject, string rid, bool isDebug)
+    {
+        var resolved = ResolveProject(targetProject, out string? error);
+        if (resolved == null)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[Error] {error}\n");
+            Console.ResetColor();
+            return 1;
+        }
+
+        TerminateProcessForProject(resolved);
+
+        string config = isDebug ? "Debug" : "Release";
+        Console.WriteLine($"\x1b[1;36m>>> Targeted Build: {resolved.CanonicalName} ({config}, {rid})...\x1b[0m\n");
+
+        int publishResult = await RunDotnetPublishAsync(resolved.RelativeCsprojPath, config, rid);
+        if (publishResult != 0)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[Error] Failed to compile {resolved.CanonicalName}.");
+            Console.ResetColor();
+            return publishResult;
+        }
+
+        string outputPath = Path.Combine(RootDir, "dist", rid, resolved.ExeName);
+        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Application updated: \x1b[1;37m{outputPath}\x1b[0m");
+        return 0;
     }
 
     private static int HandleVersionCommand(string? newVersion)
@@ -281,6 +662,7 @@ public static class Program
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine($"Unknown build target: '{command}'");
         Console.ResetColor();
+        Console.WriteLine("\nDid you mean to build a specific project? Example: \x1b[1;37m./build project:Gui\x1b[0m\n");
         PrintHelp();
         return 1;
     }
@@ -295,6 +677,7 @@ public static class Program
         RunProcessSilently("sc.exe", "stop OpenPredatorService");
         RunProcessSilently("net.exe", "stop OpenPredatorService");
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator.exe");
+        RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-gui.exe");
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-service.exe");
         RunProcessSilently("taskkill.exe", "/F /T /IM openpredator-testsuite.exe");
         RunProcessSilently("taskkill.exe", "/F /FI \"IMAGENAME eq OpenPredator*Setup.exe\"");
@@ -316,6 +699,10 @@ public static class Program
         // 2. Publish CLI
         int cliResult = await RunDotnetPublishAsync("src/OpenPredator.Cli/OpenPredator.Cli.csproj", config, rid);
         if (cliResult != 0) return cliResult;
+
+        // 3. Publish GUI
+        int guiResult = await RunDotnetPublishAsync("src/OpenPredator.Gui/OpenPredator.Gui.csproj", config, rid);
+        if (guiResult != 0) return guiResult;
 
         Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Binaries published to: \x1b[1;37mdist/{rid}/\x1b[0m");
         return 0;
@@ -361,9 +748,11 @@ public static class Program
                 return 1;
             }
 
-            Console.WriteLine($"Compiling Inno Setup script with: {isccPath}");
+            string version = GetCurrentVersion();
+            string fourPartVer = GetFourPartVersion();
+            Console.WriteLine($"Compiling Inno Setup script with: {isccPath} (v{version} / {fourPartVer})");
             string issPath = Path.Combine(RootDir, "builder", "OpenPredatorSetup.iss");
-            int isccExit = await RunProcessAsync(isccPath, $"\"{issPath}\"", RootDir);
+            int isccExit = await RunProcessAsync(isccPath, $"/DMyAppVersion=\"{version}\" /DVersionInfoVersion=\"{fourPartVer}\" \"{issPath}\"", RootDir);
             if (isccExit != 0)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -375,6 +764,8 @@ public static class Program
             Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Installer package created in: \x1b[1;37mdist/installer/\x1b[0m");
             return 0;
         }
+        else
+        {
             // Linux distribution tarball
             string version = GetCurrentVersion();
             string distDir = Path.Combine(RootDir, "dist", rid);

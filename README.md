@@ -26,7 +26,7 @@ OpenPredator is an open-source replacement for Acer's proprietary NitroSense / P
 
 The project interacts directly with the Embedded Controller (EC) via ACPI WMI (`root\wmi`) and kernel SMBIOS tables. It aims for full feature parity with OEM controls while removing background bloat, telemetry, and Windows Registry dependencies in favor of a single `%AppData%\OpenPredator\config.json` configuration file.
 
-OpenPredator's daemon is also wire-compatible with the OEM named pipe interface (`\\.\pipe\predatorsense_service_namedpipe`), allowing it to serve as a drop-in replacement service or run entirely standalone in direct hardware access mode.
+OpenPredator's daemon is also wire-compatible with the OEM named pipe interface (`\\.\pipe\predatorsense_service_namedpipe`), allowing it to serve as a drop-in replacement service or run entirely standalone in direct hardware access mode. If you prefer to keep using the official Acer NitroSense / PredatorSense UWP app, you can bridge it to OpenPredator using **[IFEOPredatorPatcher](https://github.com/KRWCLASSIC/IFEOPredatorPatcher)** with its bundled `OpenPredatorPlugin`.
 
 ---
 
@@ -89,10 +89,11 @@ OpenPredator targets parity with all standard NitroSense / PredatorSense hardwar
 ---
 
 ## Project Structure
-
+ 
 - `OpenPredator.Core`: Hardware abstraction layer, ACPI WMI caller, kernel SMBIOS reader, and JSON configuration manager.
 - `OpenPredator.Client`: IPC client for communicating with the service daemon over named pipes or Unix sockets.
 - `OpenPredator.Service`: Standalone background service daemon providing wire-compatible `PSSvc` pipe support.
+- `OpenPredator.Gui`: High-performance native C# desktop control center built with MewUI and Direct2D.
 - `OpenPredator.Cli`: Command-line interface with dynamic hardware capability probing.
 - `OpenPredator.TestingSuite`: Interactive terminal interface and diagnostic hardware tool.
 - `builder`: Cross-platform C# build runner and Inno Setup installer packaging pipeline.

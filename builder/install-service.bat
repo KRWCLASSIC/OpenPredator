@@ -18,6 +18,7 @@ echo Registering OpenPredator Service...
 sc.exe stop OpenPredator >nul 2>&1
 sc.exe create OpenPredator binPath= "\"%SERVICE_EXE%\" --run" start= auto DisplayName= "OpenPredator Service"
 sc.exe description OpenPredator "High-performance, zero-bloat hardware control daemon for Acer gaming laptops"
+sc.exe failure OpenPredator reset= 86400 actions= restart/5000/restart/10000/restart/30000
 sc.exe start OpenPredator
 
 echo.

@@ -67,11 +67,28 @@ public static unsafe class NativeWmi
     {
         lock (_lock)
         {
-            _pServices = IntPtr.Zero;
+            if (_pServices != IntPtr.Zero)
+            {
+                try
+                {
+                    Marshal.Release(_pServices);
+                }
+                catch { }
+                _pServices = IntPtr.Zero;
+            }
             _gamingInstancePath = null;
             _genericInstancePath = null;
             LastError = "None";
         }
+    }
+
+    private static bool IsRpcOrDisconnectError(int hr)
+    {
+        uint u = (uint)hr;
+        return u == 0x800706BA   // RPC_S_SERVER_UNAVAILABLE
+            || u == 0x800706BF   // RPC_S_CALL_FAILED_DNE
+            || u == 0x80010108   // RPC_E_DISCONNECTED
+            || u == 0x80070005;  // E_ACCESSDENIED
     }
 
     public static IntPtr GetServices(out string error)
@@ -155,6 +172,8 @@ public static unsafe class NativeWmi
 
             if (hr != 0 || pEnum == IntPtr.Zero)
             {
+                if (className == "AcerGamingFunction") _gamingInstancePath = defaultPath;
+                if (className == "APGeAction") _genericInstancePath = defaultPath;
                 return defaultPath;
             }
 
@@ -216,9 +235,15 @@ public static unsafe class NativeWmi
                     return foundPath;
                 }
             }
+
+            if (className == "AcerGamingFunction") _gamingInstancePath = defaultPath;
+            if (className == "APGeAction") _genericInstancePath = defaultPath;
+            return defaultPath;
         }
         catch { }
 
+        if (className == "AcerGamingFunction") _gamingInstancePath = defaultPath;
+        if (className == "APGeAction") _genericInstancePath = defaultPath;
         return defaultPath;
     }
 
@@ -250,6 +275,7 @@ public static unsafe class NativeWmi
             if (hr != 0 || pClass == IntPtr.Zero)
             {
                 LastError = $"GetObject({className}) failed: 0x{hr:X8}";
+                if (IsRpcOrDisconnectError(hr)) ResetCache();
                 return 0;
             }
 
@@ -265,6 +291,7 @@ public static unsafe class NativeWmi
             if (hr != 0 || pInParamsDef == IntPtr.Zero)
             {
                 LastError = $"GetMethod({methodName}) failed: 0x{hr:X8}";
+                if (IsRpcOrDisconnectError(hr)) ResetCache();
                 return 0;
             }
 
@@ -413,6 +440,7 @@ public static unsafe class NativeWmi
                     if (hr != 0 || pOutParams == IntPtr.Zero)
                     {
                         LastError = $"ExecMethod({instancePath}->{methodName}) failed: hrInst=0x{hrInst:X8}, hrClass=0x{hr:X8}";
+                        if (IsRpcOrDisconnectError(hr) || IsRpcOrDisconnectError(hrInst)) ResetCache();
                         return 0;
                     }
                 }

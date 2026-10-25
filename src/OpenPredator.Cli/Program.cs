@@ -127,10 +127,11 @@ public static class Program
         Console.WriteLine("  watch / top                         Live terminal dashboard updating every second\n");
 
         Console.WriteLine("\x1b[1;36mFan & Cooling:\x1b[0m");
-        Console.WriteLine("  fan auto                            Set fan mode to Auto (firmware dynamic curve)");
-        Console.WriteLine("  fan max                             Set fans to Maximum (100% speed)");
-        Console.WriteLine("  fan custom <cpu%> <gpu%>            Set custom fan percentages (0-100%)");
-        Console.WriteLine("  coolboost on|off                    Toggle CoolBoost technology (extra fan headroom)\n");
+        Console.WriteLine("  fan auto [-c|--coolboost]           Set fan mode to Auto (firmware dynamic curve)");
+        Console.WriteLine("  fan max [-c|--coolboost]            Set fans to Maximum (100% speed)");
+        Console.WriteLine("  fan custom <cpu%> <gpu%> [-c]       Set custom fan percentages (0-100%)");
+        Console.WriteLine("  coolboost on|off                    Toggle CoolBoost technology (Auto mode)");
+        Console.WriteLine("  coolboost experimental on|off       Unlock experimental CoolBoost for Custom/Max\n");
 
         Console.WriteLine("\x1b[1;36mPower & Performance:\x1b[0m");
         if (caps.IsPredator)
@@ -220,53 +221,95 @@ public static class Program
     {
         if (args.Length < 2)
         {
-            Console.WriteLine("Usage: openpredator fan auto | max | custom <cpu%> <gpu%>");
+            Console.WriteLine("Usage: openpredator fan auto | max | custom <cpu%> <gpu%> [-c|--coolboost] [-nc|--no-coolboost]");
             return 1;
         }
 
         string sub = args[1].ToLowerInvariant();
+        bool? coolBoostFlag = null;
+        for (int i = 2; i < args.Length; i++)
+        {
+            string a = args[i].ToLowerInvariant();
+            if (a is "--coolboost" or "-c") coolBoostFlag = true;
+            else if (a is "--no-coolboost" or "-nc") coolBoostFlag = false;
+        }
+
         bool success = false;
+
+        // In Custom and Max modes, CoolBoost requires experimental unlock
+        if (sub != "auto")
+        {
+            bool isExp = client.IsConnected
+                ? await client.GetExperimentalCoolBoostAsync()
+                : HardwareManager.IsExperimentalCoolBoostUnlocked();
+
+            if (coolBoostFlag == true && !isExp)
+            {
+                PrintError("CoolBoost in Custom/Max modes is experimental (can cause EC thermal desynchronization).");
+                Console.WriteLine("\x1b[90mTip: To unlock in-memory experimental mode, run:\x1b[0m");
+                Console.WriteLine("  \x1b[1;33mopenpredator coolboost experimental on\x1b[0m\n");
+                return 1;
+            }
+            else if (!isExp)
+            {
+                // Without experimental unlock, ensure CoolBoost is OFF in non-Auto mode
+                coolBoostFlag = false;
+            }
+        }
 
         switch (sub)
         {
             case "auto":
                 success = client.IsConnected
-                    ? await client.SetFanModeAsync(FanMode.Auto)
-                    : await HardwareManager.Instance.SetFanModeAsync(FanMode.Auto);
-                if (success) PrintOk("Fan Mode: \x1b[1;36mAuto\x1b[0m (Dynamic firmware curve)");
+                    ? await client.SetFanModeAsync(FanMode.Auto, coolBoost: coolBoostFlag)
+                    : await HardwareManager.Instance.SetFanModeAsync(FanMode.Auto, coolBoost: coolBoostFlag);
+                if (success)
+                {
+                    bool cb = client.IsConnected ? await client.GetCoolBoostAsync() : await HardwareManager.Instance.GetCoolBoostAsync();
+                    PrintOk($"Fan Mode: \x1b[1;36mAuto\x1b[0m (Dynamic curve) | CoolBoost: {(cb ? "\x1b[1;32mEnabled\x1b[0m" : "\x1b[90mDisabled\x1b[0m")}");
+                }
                 else PrintError("Failed to set fan mode to Auto.");
                 break;
 
             case "max":
                 success = client.IsConnected
-                    ? await client.SetFanModeAsync(FanMode.Max)
-                    : await HardwareManager.Instance.SetFanModeAsync(FanMode.Max);
-                if (success) PrintOk("Fan Mode: \x1b[1;31mMax\x1b[0m (100% Speed)");
+                    ? await client.SetFanModeAsync(FanMode.Max, coolBoost: coolBoostFlag)
+                    : await HardwareManager.Instance.SetFanModeAsync(FanMode.Max, coolBoost: coolBoostFlag);
+                if (success)
+                {
+                    bool cb = client.IsConnected ? await client.GetCoolBoostAsync() : await HardwareManager.Instance.GetCoolBoostAsync();
+                    PrintOk($"Fan Mode: \x1b[1;31mMax\x1b[0m (100% Speed) | CoolBoost: {(cb ? "\x1b[1;32mEnabled\x1b[0m" : "\x1b[90mDisabled\x1b[0m")}");
+                }
                 else PrintError("Failed to set fan mode to Max.");
                 break;
 
             case "custom":
-                int cpuPct = args.Length > 2 && int.TryParse(args[2], out int c) ? c : 50;
-                int gpuPct = args.Length > 3 && int.TryParse(args[3], out int g) ? g : 50;
+                var numericArgs = new List<int>();
+                for (int i = 2; i < args.Length; i++)
+                {
+                    if (int.TryParse(args[i], out int val))
+                    {
+                        numericArgs.Add(val);
+                    }
+                }
+
+                int cpuPct = numericArgs.Count > 0 ? numericArgs[0] : 50;
+                int gpuPct = numericArgs.Count > 1 ? numericArgs[1] : 50;
 
                 success = client.IsConnected
-                    ? await client.SetFanModeAsync(FanMode.Custom, cpuPercentage: cpuPct, gpuPercentage: gpuPct, cpuAuto: false, gpuAuto: false)
-                    : await HardwareManager.Instance.ApplyFanConfigAsync(new FanConfig
-                    {
-                        Mode = FanMode.Custom,
-                        CpuPercentage = cpuPct,
-                        GpuPercentage = gpuPct,
-                        CpuCustomAuto = false,
-                        GpuCustomAuto = false,
-                        CoolBoost = HardwareManager.Instance.CurrentFanConfig.CoolBoost
-                    });
-                if (success) PrintOk($"Custom Fan Speeds: CPU \x1b[1;36m{cpuPct}%\x1b[0m | GPU \x1b[1;36m{gpuPct}%\x1b[0m");
+                    ? await client.SetFanModeAsync(FanMode.Custom, coolBoost: coolBoostFlag, cpuPercentage: cpuPct, gpuPercentage: gpuPct, cpuAuto: false, gpuAuto: false)
+                    : await HardwareManager.Instance.SetFanModeAsync(FanMode.Custom, coolBoost: coolBoostFlag, cpuPercentage: cpuPct, gpuPercentage: gpuPct, cpuAuto: false, gpuAuto: false);
+                if (success)
+                {
+                    bool cb = client.IsConnected ? await client.GetCoolBoostAsync() : await HardwareManager.Instance.GetCoolBoostAsync();
+                    PrintOk($"Custom Fans: CPU \x1b[1;36m{cpuPct}%\x1b[0m | GPU \x1b[1;36m{gpuPct}%\x1b[0m | CoolBoost: {(cb ? "\x1b[1;32mEnabled\x1b[0m" : "\x1b[90mDisabled\x1b[0m")}");
+                }
                 else PrintError("Failed to set custom fan speeds.");
                 break;
 
             default:
                 PrintError($"Unknown fan subcommand: {sub}");
-                Console.WriteLine("Usage: openpredator fan auto | max | custom <cpu%> <gpu%>");
+                Console.WriteLine("Usage: openpredator fan auto | max | custom <cpu%> <gpu%> [-c|--coolboost] [-nc|--no-coolboost]");
                 return 1;
         }
 
@@ -275,6 +318,44 @@ public static class Program
 
     private static async Task<int> HandleCoolBoostCommandAsync(IOpenPredatorClient client, string[] args)
     {
+        if (args.Length >= 2 && args[1].Equals("experimental", StringComparison.OrdinalIgnoreCase))
+        {
+            if (args.Length < 3)
+            {
+                bool isUnlocked = client.IsConnected
+                    ? await client.GetExperimentalCoolBoostAsync()
+                    : HardwareManager.IsExperimentalCoolBoostUnlocked();
+                PrintOk($"Experimental CoolBoost: {(isUnlocked ? "\x1b[1;33mUnlocked (In-Memory)\x1b[0m" : "\x1b[90mLocked\x1b[0m")}");
+                return 0;
+            }
+
+            bool enableExp = args[2].Equals("on", StringComparison.OrdinalIgnoreCase) ||
+                             args[2].Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                             args[2] == "1";
+
+            if (client.IsConnected)
+            {
+                await client.SetExperimentalCoolBoostAsync(enableExp);
+            }
+            HardwareManager.SetExperimentalCoolBoostUnlocked(enableExp);
+
+            if (enableExp)
+            {
+                PrintOk("Experimental CoolBoost: \x1b[1;33mUnlocked (In-Memory)\x1b[0m. CoolBoost is now permitted in Custom and Max modes.");
+            }
+            else
+            {
+                FanMode currentMode = client.IsConnected ? await client.GetFanModeAsync() : await HardwareManager.Instance.GetFanModeAsync();
+                if (currentMode != FanMode.Auto)
+                {
+                    if (client.IsConnected) await client.SetCoolBoostAsync(false);
+                    else await HardwareManager.Instance.SetCoolBoostAsync(false);
+                }
+                PrintOk("Experimental CoolBoost: \x1b[90mLocked\x1b[0m. CoolBoost is restricted to Auto mode.");
+            }
+            return 0;
+        }
+
         if (args.Length < 2)
         {
             bool cur = client.IsConnected
@@ -285,6 +366,26 @@ public static class Program
         }
 
         bool enable = args[1].Equals("on", StringComparison.OrdinalIgnoreCase) || args[1] == "1";
+
+        if (enable)
+        {
+            FanMode currentMode = client.IsConnected
+                ? await client.GetFanModeAsync()
+                : await HardwareManager.Instance.GetFanModeAsync();
+
+            bool isExp = client.IsConnected
+                ? await client.GetExperimentalCoolBoostAsync()
+                : HardwareManager.IsExperimentalCoolBoostUnlocked();
+
+            if (currentMode != FanMode.Auto && !isExp)
+            {
+                PrintError($"CoolBoost is officially restricted to Auto mode (current mode: {currentMode}).");
+                Console.WriteLine("\x1b[90mTip: To unlock in-memory experimental mode for Custom/Max, run:\x1b[0m");
+                Console.WriteLine("  \x1b[1;33mopenpredator coolboost experimental on\x1b[0m\n");
+                return 1;
+            }
+        }
+
         bool success = client.IsConnected
             ? await client.SetCoolBoostAsync(enable)
             : await HardwareManager.Instance.SetCoolBoostAsync(enable);
@@ -295,7 +396,7 @@ public static class Program
         }
         else
         {
-            PrintError("Failed to update CoolBoost state.");
+            PrintError("Failed to update CoolBoost state (mode not supported or rejected).");
         }
         return success ? 0 : 1;
     }

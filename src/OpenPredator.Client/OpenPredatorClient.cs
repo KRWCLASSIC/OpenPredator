@@ -18,9 +18,12 @@ public interface IOpenPredatorClient : IDisposable
     bool IsConnected { get; }
     Task<bool> ConnectAsync(int timeoutMs = 2000, CancellationToken ct = default);
     Task<SensorData> GetSensorsAsync(CancellationToken ct = default);
-    Task<bool> SetFanModeAsync(FanMode mode, bool coolBoost = false, int cpuPercentage = 50, int gpuPercentage = 50, bool cpuAuto = true, bool gpuAuto = true, FanMode? cpuMode = null, FanMode? gpuMode = null, CancellationToken ct = default);
+    Task<FanMode> GetFanModeAsync(CancellationToken ct = default);
+    Task<bool> SetFanModeAsync(FanMode mode, bool? coolBoost = null, int cpuPercentage = 50, int gpuPercentage = 50, bool cpuAuto = true, bool gpuAuto = true, FanMode? cpuMode = null, FanMode? gpuMode = null, CancellationToken ct = default);
     Task<bool> SetCoolBoostAsync(bool enabled, CancellationToken ct = default);
     Task<bool> GetCoolBoostAsync(CancellationToken ct = default);
+    Task<bool> GetExperimentalCoolBoostAsync(CancellationToken ct = default);
+    Task<bool> SetExperimentalCoolBoostAsync(bool enabled, CancellationToken ct = default);
     Task<bool> SetFanSpeedAsync(int fanIndex, int percentage, CancellationToken ct = default);
     Task<bool> SetPowerModeAsync(PowerMode mode, CancellationToken ct = default);
     Task<bool> SetRgbKeyboardAsync(RgbConfig config, CancellationToken ct = default);
@@ -44,13 +47,12 @@ public class OpenPredatorClient : IOpenPredatorClient
 
     public bool IsConnected => _stream != null;
 
-    public async Task<bool> ConnectAsync(int timeoutMs = 2000, CancellationToken ct = default)
+    private async Task<bool> ConnectInternalAsync(int timeoutMs = 2000, CancellationToken ct = default)
     {
-        await _lock.WaitAsync(ct);
+        if (_stream != null) return true;
+
         try
         {
-            if (_stream != null) return true;
-
             if (OperatingSystem.IsWindows())
             {
                 var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
@@ -69,8 +71,18 @@ public class OpenPredatorClient : IOpenPredatorClient
         }
         catch
         {
+            try { _stream?.Dispose(); } catch { }
             _stream = null;
             return false;
+        }
+    }
+
+    public async Task<bool> ConnectAsync(int timeoutMs = 2000, CancellationToken ct = default)
+    {
+        await _lock.WaitAsync(ct);
+        try
+        {
+            return await ConnectInternalAsync(timeoutMs, ct);
         }
         finally
         {
@@ -122,9 +134,9 @@ public class OpenPredatorClient : IOpenPredatorClient
         if (Core.Backends.NvmlTelemetry.TryGetGpuMetrics(out int nvGpuTemp, out int nvGpuLoad, out int nvGpuFreq, out int nvGpuCount))
         {
             if (nvGpuTemp > 0) gpuTemp = nvGpuTemp;
-            gpuLoad = nvGpuLoad;
-            gpuFreq = nvGpuFreq;
-            gpuCount = nvGpuCount;
+            if (nvGpuLoad > 0 || gpuLoad == 0) gpuLoad = nvGpuLoad;
+            if (nvGpuFreq > 0) gpuFreq = nvGpuFreq;
+            if (nvGpuCount > 0) gpuCount = nvGpuCount;
         }
 
         return new SensorData
@@ -142,7 +154,7 @@ public class OpenPredatorClient : IOpenPredatorClient
 
     public async Task<bool> SetFanModeAsync(
         FanMode mode,
-        bool coolBoost = false,
+        bool? coolBoost = null,
         int cpuPercentage = 50,
         int gpuPercentage = 50,
         bool cpuAuto = true,
@@ -202,12 +214,29 @@ public class OpenPredatorClient : IOpenPredatorClient
             await SendCommandAsync(ServiceCommand.GamingFanGroupSpeedSetFunction, new object[] { gpuSpeed2 }, ct);
         }
 
-        if (coolBoost)
+        if (coolBoost.HasValue)
         {
-            await SetCoolBoostAsync(true, ct);
+            await SetCoolBoostAsync(coolBoost.Value, ct);
         }
 
         return true;
+    }
+
+    public async Task<FanMode> GetFanModeAsync(CancellationToken ct = default)
+    {
+        var res = await SendCommandAsync(ServiceCommand.WmiGetGamingMiscSetting, new object[] { 0xCFu }, ct);
+        if (res.Count > 0 && res[0].Length >= 8)
+        {
+            ulong val = BinaryPrimitives.ReadUInt64LittleEndian(res[0]);
+            return val switch
+            {
+                1UL => FanMode.Auto,
+                2UL => FanMode.Max,
+                3UL => FanMode.Custom,
+                _ => FanMode.Auto
+            };
+        }
+        return FanMode.Auto;
     }
 
     public async Task<bool> SetCoolBoostAsync(bool enabled, CancellationToken ct = default)
@@ -215,6 +244,11 @@ public class OpenPredatorClient : IOpenPredatorClient
         // NitroSense / PSSvc: ServiceCommand.WmiSetFunction (Cmd 17) -> APGeAction.SetFunction(0x00010007 / 0x00000007)
         ulong wmiInput = ((enabled ? 1UL : 0UL) << 16) | 7UL;
         var res = await SendCommandAsync(ServiceCommand.WmiSetFunction, new object[] { wmiInput }, ct);
+        if (res.Count > 0 && res[0].Length >= 4)
+        {
+            int status = BinaryPrimitives.ReadInt32LittleEndian(res[0]);
+            return status == 0;
+        }
         return res.Count > 0;
     }
 
@@ -228,6 +262,24 @@ public class OpenPredatorClient : IOpenPredatorClient
             if ((val & 0xFF) == 0) return ((val >> 8) & 0xFF) == 1;
         }
         return false;
+    }
+
+    public async Task<bool> GetExperimentalCoolBoostAsync(CancellationToken ct = default)
+    {
+        var res = await SendCommandAsync(ServiceCommand.WmiGetGamingMiscSetting, new object[] { 0xCBu }, ct);
+        if (res.Count > 0 && res[0].Length >= 8)
+        {
+            return BinaryPrimitives.ReadUInt64LittleEndian(res[0]) == 1UL;
+        }
+        return HardwareManager.IsExperimentalCoolBoostUnlocked();
+    }
+
+    public async Task<bool> SetExperimentalCoolBoostAsync(bool enabled, CancellationToken ct = default)
+    {
+        uint val = 0xCBu | ((enabled ? 1u : 0u) << 8);
+        await SendCommandAsync(ServiceCommand.WmiSetGamingMiscSetting, new object[] { val }, ct);
+        HardwareManager.SetExperimentalCoolBoostUnlocked(enabled);
+        return true;
     }
 
     public async Task<bool> SetFanSpeedAsync(int fanIndex, int percentage, CancellationToken ct = default)
@@ -355,15 +407,15 @@ public class OpenPredatorClient : IOpenPredatorClient
 
     public async Task<List<byte[]>> SendCommandAsync(ServiceCommand command, object[] args, CancellationToken ct = default)
     {
-        if (_stream == null)
-        {
-            bool connected = await ConnectAsync(1000, ct);
-            if (!connected || _stream == null) return new List<byte[]>();
-        }
-
         await _lock.WaitAsync(ct);
         try
         {
+            if (_stream == null)
+            {
+                bool connected = await ConnectInternalAsync(1000, ct);
+                if (!connected || _stream == null) return new List<byte[]>();
+            }
+
             byte[] req = PacketSerializer.SerializeRequest(command, args);
             await _stream.WriteAsync(req, 0, req.Length, ct);
             await _stream.FlushAsync(ct);
@@ -378,6 +430,7 @@ public class OpenPredatorClient : IOpenPredatorClient
         }
         catch
         {
+            try { _stream?.Dispose(); } catch { }
             _stream = null;
             return new List<byte[]>();
         }

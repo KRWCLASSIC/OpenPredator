@@ -13,6 +13,7 @@ public sealed record UserConfig
     public bool LcdOverdrive { get; init; } = false;
     public bool WinKeyLock { get; init; } = false;
     public RgbConfig Rgb { get; init; } = new();
+    public bool EnableLogging { get; init; } = true;
 }
 
 [JsonSourceGenerationOptions(
