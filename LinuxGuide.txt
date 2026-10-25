@@ -1,0 +1,32 @@
+OpenPredator - Live Environment Quick Testing Guide
+
+1. EXTRACT ARCHIVE (on Linux / USB):
+   tar -xvf OpenPredator-v*-linux-x64.tar.gz
+   chmod +x openpredator openpredator-service openpredator-gui
+
+2. INSTALL ACPI KERNEL BRIDGE (Required once per live session):
+   sudo apt update && sudo apt install -y acpi-call-dkms
+   sudo modprobe acpi_call
+
+   # Verify module loaded:
+   ls -l /proc/acpi/call
+
+3. RUNNING OPENPREDATOR:
+
+   --- OPTION A: Standalone CLI (Direct Hardware Access) ---
+   sudo ./openpredator status             # Show live temps & fan RPM
+   sudo ./openpredator fan max            # Set fans to 100% speed
+   sudo ./openpredator fan auto           # Return to firmware dynamic auto curve
+   sudo ./openpredator fan custom 70 85   # Set CPU to 70%, GPU to 85%
+   sudo ./openpredator coolboost on       # Enable Acer CoolBoost
+   sudo ./openpredator mode perf          # Set Power Mode (quiet, default, perf, turbo)
+   sudo ./openpredator watch              # Live interactive terminal dashboard
+
+   --- OPTION B: Background Service + Unprivileged CLI/GUI ---
+   Terminal 1 (Start root daemon):
+     sudo ./openpredator-service
+
+   Terminal 2 (Run as regular user without sudo):
+     ./openpredator watch                 # Live dashboard
+     ./openpredator fan max
+     ./openpredator-gui                   # Desktop GUI (no sudo required)
