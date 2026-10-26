@@ -4,12 +4,14 @@ OpenPredator - Live Environment Quick Testing Guide
    tar -xvf OpenPredator-v*-linux-x64.tar.gz
    chmod +x openpredator openpredator-service openpredator-gui
 
-2. INSTALL ACPI KERNEL BRIDGE (Required once per live session):
+2. INSTALL ACPI & WMI KERNEL MODULES (Required once per live session):
    sudo apt update && sudo apt install -y acpi-call-dkms
    sudo modprobe acpi_call
+   sudo modprobe wmi-bmof
 
-   # Verify module loaded:
+   # Verify modules loaded:
    ls -l /proc/acpi/call
+   ls -l /sys/bus/wmi/devices/*/bmof
 
 3. RUNNING OPENPREDATOR:
 

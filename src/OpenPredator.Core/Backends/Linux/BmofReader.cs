@@ -18,6 +18,7 @@ public static class BmofReader
 {
     private static readonly Dictionary<string, uint> _gamingMethodMap = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, uint> _genericMethodMap = new(StringComparer.OrdinalIgnoreCase);
+    public static string? DiscoveredAcpiBasePath { get; private set; }
     private static bool _initialized = false;
     private static readonly object _lock = new();
 
@@ -50,12 +51,31 @@ public static class BmofReader
                 return;
             }
 
-            // 2. Discover BMOF sysfs file in /sys/bus/wmi/devices/*/bmof
-            string? bmofPath = FindBmofSysfsPath();
-            if (bmofPath != null && TryDecompressAndParse(bmofPath))
+            // 2. Discover ALL BMOF sysfs files in /sys/bus/wmi/devices/*/bmof
+            var bmofPaths = FindAllBmofSysfsPaths();
+            // Sort by file size descending so the primary ACPI table (e.g. ~12KB) is parsed first
+            bmofPaths.Sort((a, b) =>
+            {
+                try
+                {
+                    return new FileInfo(b).Length.CompareTo(new FileInfo(a).Length);
+                }
+                catch
+                {
+                    return 0;
+                }
+            });
+
+            foreach (var bmofPath in bmofPaths)
+            {
+                AppLogger.Info($"[BmofReader] Probing BMOF candidate: {bmofPath}");
+                TryDecompressAndParse(bmofPath);
+            }
+
+            if (_gamingMethodMap.Count > 0 || _genericMethodMap.Count > 0)
             {
                 SaveToCache(cachePath);
-                AppLogger.Info($"[BmofReader] Successfully decompressed and parsed BMOF from {bmofPath} (cached to {cachePath})");
+                AppLogger.Info($"[BmofReader] Successfully discovered {_gamingMethodMap.Count} AcerGamingFunction and {_genericMethodMap.Count} APGeAction methods (cached to {cachePath})");
                 _initialized = true;
                 return;
             }
@@ -65,20 +85,21 @@ public static class BmofReader
         }
     }
 
-    private static string? FindBmofSysfsPath()
+    private static List<string> FindAllBmofSysfsPaths()
     {
+        var list = new List<string>();
         const string wmiDevicesPath = "/sys/bus/wmi/devices";
-        if (!Directory.Exists(wmiDevicesPath)) return null;
+        if (!Directory.Exists(wmiDevicesPath)) return list;
 
         foreach (var dir in Directory.GetDirectories(wmiDevicesPath))
         {
             string bmofFile = Path.Combine(dir, "bmof");
             if (File.Exists(bmofFile))
             {
-                return bmofFile;
+                list.Add(bmofFile);
             }
         }
-        return null;
+        return list;
     }
 
     private static bool TryDecompressAndParse(string bmofPath)
@@ -86,6 +107,7 @@ public static class BmofReader
         try
         {
             byte[] raw = File.ReadAllBytes(bmofPath);
+            AppLogger.Info($"[BmofReader] Reading {bmofPath} ({raw.Length} bytes)");
             if (raw.Length <= 16) return false;
 
             // BMOF Header:
@@ -95,7 +117,7 @@ public static class BmofReader
             // 12..15: Decompressed size
             uint magic = BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(0, 4));
             uint version = BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(4, 4));
-            if (magic != 0x424D4F46 || version != 0x00000001)
+            if ((magic != 0x424D4F46 && magic != 0x464F4D42) || version != 0x00000001)
             {
                 AppLogger.Warn($"[BmofReader] Invalid BMOF magic (0x{magic:X8}) or version (0x{version:X8}) in {bmofPath}");
                 return false;
@@ -109,14 +131,66 @@ public static class BmofReader
             }
 
             ReadOnlySpan<byte> compressedPayload = raw.AsSpan(16);
-            byte[]? bmfData = DoubleSpaceDecoder.Decompress(compressedPayload, decompressedSize);
+            byte[]? bmfData;
+
+            // Check if already uncompressed BMF (starts with BMOF magic)
+            if (compressedPayload.Length >= 4)
+            {
+                uint payloadMagic = BinaryPrimitives.ReadUInt32LittleEndian(compressedPayload.Slice(0, 4));
+                if (payloadMagic == 0x424D4F46 || payloadMagic == 0x464F4D42)
+                {
+                    bmfData = compressedPayload.ToArray();
+                }
+                else
+                {
+                    bmfData = DoubleSpaceDecoder.Decompress(compressedPayload, decompressedSize);
+                }
+            }
+            else
+            {
+                bmfData = DoubleSpaceDecoder.Decompress(compressedPayload, decompressedSize);
+            }
+
             if (bmfData == null)
             {
                 AppLogger.Warn($"[BmofReader] DoubleSpace decompression failed for {bmofPath}");
                 return false;
             }
 
-            return BmfParser.Parse(bmfData, _gamingMethodMap, _genericMethodMap);
+            int oldGaming = _gamingMethodMap.Count;
+            int oldGeneric = _genericMethodMap.Count;
+            bool parsed = BmfParser.Parse(bmfData, _gamingMethodMap, _genericMethodMap);
+            int newGaming = _gamingMethodMap.Count - oldGaming;
+            int newGeneric = _genericMethodMap.Count - oldGeneric;
+
+            if (newGaming > 0 || newGeneric > 0)
+            {
+                AppLogger.Info($"[BmofReader] Parsed {newGaming} AcerGamingFunction and {newGeneric} APGeAction methods from {bmofPath}");
+
+                // Associate ACPI device path from parent device directory if present
+                string? deviceDir = Path.GetDirectoryName(bmofPath);
+                if (!string.IsNullOrEmpty(deviceDir))
+                {
+                    string fnPath = Path.Combine(deviceDir, "firmware_node", "path");
+                    if (File.Exists(fnPath))
+                    {
+                        try
+                        {
+                            string acpiPath = File.ReadAllText(fnPath).Trim();
+                            if (!string.IsNullOrEmpty(acpiPath))
+                            {
+                                DiscoveredAcpiBasePath = acpiPath;
+                                AppLogger.Info($"[BmofReader] Associated ACPI device path from sysfs: {acpiPath}");
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                return true;
+            }
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -152,6 +226,10 @@ public static class BmofReader
                 {
                     foreach (var kvp in cache.APGeAction) _genericMethodMap[kvp.Key] = kvp.Value;
                 }
+                if (!string.IsNullOrEmpty(cache.AcpiBasePath))
+                {
+                    DiscoveredAcpiBasePath = cache.AcpiBasePath;
+                }
             }
 
             return _gamingMethodMap.Count > 0;
@@ -166,7 +244,7 @@ public static class BmofReader
     {
         try
         {
-            var cache = new BmofCache(_gamingMethodMap, _genericMethodMap);
+            var cache = new BmofCache(_gamingMethodMap, _genericMethodMap, DiscoveredAcpiBasePath);
             string json = JsonSerializer.Serialize(cache, BmofJsonContext.Default.BmofCache);
             File.WriteAllText(cachePath, json);
         }
@@ -370,14 +448,14 @@ public static class BmofReader
 
             // Decompressed BMF starts with 0x424D4F46 ("BMOF") and length of first part
             uint magic = BinaryPrimitives.ReadUInt32LittleEndian(bmf.AsSpan(0, 4));
-            if (magic != 0x424D4F46) return false;
+            if (magic != 0x424D4F46 && magic != 0x464F4D42) return false;
 
             uint firstPartLen = BinaryPrimitives.ReadUInt32LittleEndian(bmf.AsSpan(4, 4));
             if (firstPartLen > bmf.Length || firstPartLen < 20) return false;
 
             // Root structure at offset 8:
-            // offset 8:  unknown1 (4 bytes)
-            // offset 12: unknown2 (4 bytes)
+            // offset 8:  unknown1 (4 bytes, 0x1)
+            // offset 12: unknown2 (4 bytes, 0x1)
             // offset 16: classCount (4 bytes)
             uint classCount = BinaryPrimitives.ReadUInt32LittleEndian(bmf.AsSpan(16, 4));
             int offset = 20;
@@ -474,6 +552,7 @@ public static class BmofReader
                         {
                             uint methodId = BinaryPrimitives.ReadUInt32LittleEndian(methodSpan.Slice(qualOffset + 16 + (int)qNameLen, 4));
                             targetMap[methodName] = methodId;
+                            AppLogger.Info($"[BmofReader] Method mapped: {methodName} -> WmiMethodId {methodId}");
                         }
                     }
                 }
@@ -485,40 +564,64 @@ public static class BmofReader
         private static string? GetClassName(ReadOnlySpan<byte> classData)
         {
             if (classData.Length < 16) return null;
-            int offset = 0;
-            uint len1 = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset, 4));
-            offset += 8 + (int)len1; // skip qualifiers
+            uint len1 = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(0, 4));
+            int offset = (int)len1; // Qualifiers block length (includes its 8-byte header)
 
             if (offset + 8 > classData.Length) return null;
             uint len2 = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset, 4));
             uint count2 = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset + 4, 4));
+            int varEnd = offset + (int)len2;
             offset += 8;
 
-            for (int i = 0; i < count2 && offset + 20 <= classData.Length; i++)
+            // 1. Scan variables/properties block
+            for (int i = 0; i < count2 && offset + 20 <= varEnd; i++)
             {
                 uint propLen = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset, 4));
-                if (propLen == 0 || offset + propLen > classData.Length) break;
+                if (propLen < 20 || offset + propLen > varEnd) break;
 
-                uint propType = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset + 4, 4));
-                uint isClassProp = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset + 16, 4));
+                string? name = TryExtractClassName(classData.Slice(offset, (int)propLen));
+                if (name != null) return name;
 
-                if (isClassProp == 0xFFFFFFFF && propType == 0x08)
+                offset += (int)propLen;
+            }
+
+            // 2. Scan trailing class properties block (where __CLASS typically resides)
+            offset = varEnd;
+            while (offset + 20 <= classData.Length)
+            {
+                uint propLen = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset, 4));
+                if (propLen < 20 || offset + propLen > classData.Length) break;
+
+                string? name = TryExtractClassName(classData.Slice(offset, (int)propLen));
+                if (name != null) return name;
+
+                offset += (int)propLen;
+            }
+
+            return null;
+        }
+
+        private static string? TryExtractClassName(ReadOnlySpan<byte> propSpan)
+        {
+            if (propSpan.Length < 20) return null;
+            uint propType = BinaryPrimitives.ReadUInt32LittleEndian(propSpan.Slice(4, 4));
+            uint isClassProp = BinaryPrimitives.ReadUInt32LittleEndian(propSpan.Slice(16, 4));
+
+            if (isClassProp == 0xFFFFFFFF && propType == 0x08)
+            {
+                uint slen = BinaryPrimitives.ReadUInt32LittleEndian(propSpan.Slice(12, 4));
+                if (20 + slen <= propSpan.Length)
                 {
-                    uint slen = BinaryPrimitives.ReadUInt32LittleEndian(classData.Slice(offset + 12, 4));
-                    if (offset + 20 + slen <= classData.Length)
+                    string propName = ParseString(propSpan.Slice(20, (int)slen));
+                    if (string.Equals(propName, "__CLASS", StringComparison.OrdinalIgnoreCase))
                     {
-                        string name = ParseString(classData.Slice(offset + 20, (int)slen));
-                        if (string.Equals(name, "__CLASS", StringComparison.OrdinalIgnoreCase))
+                        int valLen = (int)(propSpan.Length - slen - 20);
+                        if (valLen > 0)
                         {
-                            int valLen = (int)(propLen - slen - 20);
-                            if (valLen > 0 && offset + 20 + slen + valLen <= classData.Length)
-                            {
-                                return ParseString(classData.Slice(offset + 20 + (int)slen, valLen));
-                            }
+                            return ParseString(propSpan.Slice(20 + (int)slen, valLen));
                         }
                     }
                 }
-                offset += (int)propLen;
             }
             return null;
         }
@@ -540,7 +643,8 @@ public static class BmofReader
 
 internal sealed record BmofCache(
     Dictionary<string, uint> AcerGamingFunction,
-    Dictionary<string, uint> APGeAction
+    Dictionary<string, uint> APGeAction,
+    string? AcpiBasePath = null
 );
 
 [JsonSourceGenerationOptions(WriteIndented = true)]

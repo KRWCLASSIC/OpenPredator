@@ -69,6 +69,14 @@ public static class LinuxAcpiCall
             if (_discoveryAttempted) return _acpiBasePath;
             _discoveryAttempted = true;
 
+            // 0. Use ACPI device path directly associated with the Acer BMOF table
+            if (!string.IsNullOrEmpty(BmofReader.DiscoveredAcpiBasePath))
+            {
+                _acpiBasePath = BmofReader.DiscoveredAcpiBasePath;
+                AppLogger.Info($"[LinuxAcpiCall] Using ACPI device path from BMOF reader: {_acpiBasePath}");
+                return _acpiBasePath;
+            }
+
             // 1. Discover via /sys/bus/wmi/devices/*/firmware_node/path
             const string wmiPath = "/sys/bus/wmi/devices";
             if (Directory.Exists(wmiPath))
@@ -146,6 +154,11 @@ public static class LinuxAcpiCall
             if (string.IsNullOrEmpty(raw) || raw.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
             {
                 return 0;
+            }
+
+            if (raw.StartsWith("{") && raw.EndsWith("}"))
+            {
+                raw = raw[1..^1].Trim();
             }
 
             if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
