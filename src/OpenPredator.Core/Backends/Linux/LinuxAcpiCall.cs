@@ -13,8 +13,12 @@ namespace OpenPredator.Core.Backends.Linux;
 public static class LinuxAcpiCall
 {
     private const string AcpiCallPath = "/proc/acpi/call";
+    private const string GamingFunctionGuid = "7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56";
+    private const string GenericActionGuid = "BD6FED80-9DA7-47CE-827D-5A46C495B422";
 
     private static string? _acpiBasePath = null;
+    private static string? _gamingMethodName = null;
+    private static string? _genericMethodName = null;
     private static bool _discoveryAttempted = false;
     private static readonly object _syncLock = new();
 
@@ -36,8 +40,21 @@ public static class LinuxAcpiCall
             return 0;
         }
 
-        string fullPath = $"{basePath}.WMBC";
-        return Evaluate(fullPath, 0, methodId.Value, input);
+        if (_gamingMethodName == null)
+        {
+            _gamingMethodName = GetWmiMethodName(GamingFunctionGuid);
+            if (_gamingMethodName == null)
+            {
+                AppLogger.Error($"[LinuxAcpiCall] Could not discover WMI object_id for AcerGamingFunction ({GamingFunctionGuid}) in sysfs.");
+                return 0;
+            }
+            AppLogger.Info($"[LinuxAcpiCall] Discovered AcerGamingFunction WMI method: {_gamingMethodName}");
+        }
+
+        string fullPath = $"{basePath}.{_gamingMethodName}";
+        ulong result = Evaluate(fullPath, 0, methodId.Value, input);
+        AppLogger.Debug($"[LinuxAcpiCall] ExecuteGamingFunction({methodName}, 0x{input:X}) -> 0x{result:X}");
+        return result;
     }
 
     public static ulong ExecuteGenericMethod(string methodName, ulong input)
@@ -56,8 +73,52 @@ public static class LinuxAcpiCall
             return 0;
         }
 
-        string fullPath = $"{basePath}.WMBA";
-        return Evaluate(fullPath, 0, methodId.Value, input);
+        if (_genericMethodName == null)
+        {
+            _genericMethodName = GetWmiMethodName(GenericActionGuid);
+            if (_genericMethodName == null)
+            {
+                AppLogger.Error($"[LinuxAcpiCall] Could not discover WMI object_id for APGeAction ({GenericActionGuid}) in sysfs.");
+                return 0;
+            }
+            AppLogger.Info($"[LinuxAcpiCall] Discovered APGeAction WMI method: {_genericMethodName}");
+        }
+
+        string fullPath = $"{basePath}.{_genericMethodName}";
+        ulong result = Evaluate(fullPath, 0, methodId.Value, input);
+        AppLogger.Debug($"[LinuxAcpiCall] ExecuteGenericMethod({methodName}, 0x{input:X}) -> 0x{result:X}");
+        return result;
+    }
+
+    private static string? GetWmiMethodName(string guid)
+    {
+        const string wmiDevicesPath = "/sys/bus/wmi/devices";
+        if (!Directory.Exists(wmiDevicesPath)) return null;
+
+        foreach (var dir in Directory.GetDirectories(wmiDevicesPath))
+        {
+            string dirName = Path.GetFileName(dir);
+            if (dirName.StartsWith(guid, StringComparison.OrdinalIgnoreCase))
+            {
+                string objIdFile = Path.Combine(dir, "object_id");
+                if (File.Exists(objIdFile))
+                {
+                    try
+                    {
+                        string id = File.ReadAllText(objIdFile).Trim();
+                        if (!string.IsNullOrEmpty(id))
+                        {
+                            return $"WM{id}";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLogger.Warn($"[LinuxAcpiCall] Failed to read {objIdFile}: {ex.Message}");
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private static string? GetAcpiDeviceBasePath()
@@ -147,20 +208,44 @@ public static class LinuxAcpiCall
 
         try
         {
-            string cmd = $"{acpiPath} {instance} {methodId} 0x{input:X}";
+            byte[] inputBytes = BitConverter.GetBytes(input);
+            string bufferArg = "b" + Convert.ToHexString(inputBytes).ToLowerInvariant();
+            string cmd = $"{acpiPath} {instance} {methodId} {bufferArg}";
             File.WriteAllText(AcpiCallPath, cmd);
 
             string raw = File.ReadAllText(AcpiCallPath).Trim().Trim('\0');
-            if (string.IsNullOrEmpty(raw) || raw.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
+            if (string.IsNullOrEmpty(raw))
             {
                 return 0;
             }
 
-            if (raw.StartsWith("{") && raw.EndsWith("}"))
+            if (raw.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
             {
-                raw = raw[1..^1].Trim();
+                AppLogger.Warn($"[LinuxAcpiCall] ACPI error for '{cmd}': {raw}");
+                return 0;
             }
 
+            // Case 1: ACPI buffer format: "{0x01, 0x28, 0x00, 0x00, ...}"
+            if (raw.StartsWith("{") && raw.EndsWith("}"))
+            {
+                string inner = raw[1..^1].Trim();
+                if (string.IsNullOrEmpty(inner)) return 0;
+
+                string[] parts = inner.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                ulong val = 0;
+                for (int i = 0; i < Math.Min(parts.Length, 8); i++)
+                {
+                    string p = parts[i];
+                    if (p.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) p = p[2..];
+                    if (byte.TryParse(p, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out byte b))
+                    {
+                        val |= ((ulong)b) << (i * 8);
+                    }
+                }
+                return val;
+            }
+
+            // Case 2: Hex integer: "0x1234"
             if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
             {
                 if (ulong.TryParse(raw[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out ulong hexVal))
@@ -169,6 +254,7 @@ public static class LinuxAcpiCall
                 }
             }
 
+            // Case 3: Decimal integer: "1234"
             if (ulong.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out ulong decVal))
             {
                 return decVal;
@@ -176,7 +262,7 @@ public static class LinuxAcpiCall
         }
         catch (Exception ex)
         {
-            AppLogger.Debug($"[LinuxAcpiCall] Evaluation error ({acpiPath}): {ex.Message}");
+            AppLogger.Warn($"[LinuxAcpiCall] Evaluation exception ({acpiPath}): {ex.Message}");
         }
 
         return 0;
