@@ -2,6 +2,8 @@ using System;
 using System.IO;
 using System.Threading.Tasks;
 using OpenPredator.Core.Backends;
+using OpenPredator.Core.Backends.Linux;
+using OpenPredator.Core.Backends.Windows;
 using OpenPredator.Core.Enums;
 using OpenPredator.Core.Models;
 
@@ -112,11 +114,11 @@ public sealed class HardwareManager
     {
         if (OperatingSystem.IsWindows())
         {
-            return new WindowsWmiBackend();
+            return new WindowsHardwareBackend();
         }
         if (OperatingSystem.IsLinux())
         {
-            return new LinuxAcpiBackend();
+            return new LinuxHardwareBackend();
         }
 
         throw new PlatformNotSupportedException("OpenPredator requires a supported Windows or Linux environment with ACPI/WMI hardware.");

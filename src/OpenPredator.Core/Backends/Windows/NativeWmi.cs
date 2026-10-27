@@ -551,4 +551,3 @@ public static unsafe class NativeWmi
         return 0;
     }
 }
-

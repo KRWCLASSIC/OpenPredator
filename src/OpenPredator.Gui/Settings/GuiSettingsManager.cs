@@ -603,16 +603,6 @@ internal static class GuiSettingsManager
 
     public static bool IsAdministrator()
     {
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                using var identity = WindowsIdentity.GetCurrent();
-                var principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
-            }
-            catch { return false; }
-        }
-        return false;
+        return ProcessElevation.IsElevated;
     }
 }

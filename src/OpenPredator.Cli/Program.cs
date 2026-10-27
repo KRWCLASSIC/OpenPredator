@@ -24,6 +24,17 @@ public static class Program
         bool connected = await client.ConnectAsync(1500);
         if (!connected)
         {
+            if (cmd != "config" && !ProcessElevation.IsElevated)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("[Notice] Background daemon (OpenPredator Service / OEM PSSvc) is not active on pipe.");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[Error] Direct hardware access requires elevated privileges (Administrator on Windows, sudo/root on Linux).");
+                Console.ResetColor();
+                Console.WriteLine("        Please start the service (e.g. 'sudo openpredator-service' or Windows Service) or run this command with elevation.\n");
+                return 1;
+            }
+
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine("[Notice] No background daemon (OpenPredator Service / OEM PSSvc) active on pipe.");
             Console.WriteLine("         Falling back to direct hardware access (ACPI WMI + SMBIOS + NVML)...\n");

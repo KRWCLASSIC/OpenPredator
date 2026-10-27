@@ -55,13 +55,26 @@ public class NamedPipeServer
                     var everyone = new SecurityIdentifier(WellKnownSidType.WorldSid, null);
                     var authUsers = new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null);
 
+                    try
+                    {
+                        using var currentIdentity = WindowsIdentity.GetCurrent();
+                        if (currentIdentity.User != null)
+                        {
+                            pipeSecurity.AddAccessRule(new PipeAccessRule(
+                                currentIdentity.User,
+                                PipeAccessRights.FullControl,
+                                AccessControlType.Allow));
+                        }
+                    }
+                    catch { }
+
                     pipeSecurity.AddAccessRule(new PipeAccessRule(
                         everyone,
-                        PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+                        PipeAccessRights.ReadWrite,
                         AccessControlType.Allow));
                     pipeSecurity.AddAccessRule(new PipeAccessRule(
                         authUsers,
-                        PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
+                        PipeAccessRights.ReadWrite,
                         AccessControlType.Allow));
 
                     serverStream = NamedPipeServerStreamAcl.Create(

@@ -1,23 +1,33 @@
 using System;
-using System.Runtime.Versioning;
 using System.Threading.Tasks;
 using OpenPredator.Core.Enums;
 using OpenPredator.Core.Models;
 
 namespace OpenPredator.Core.Backends;
 
-[SupportedOSPlatform("windows")]
-public class WindowsWmiBackend : IHardwareBackend
+/// <summary>
+/// Universal shared hardware control backend for Acer Nitro and Predator laptops.
+/// Implements full feature parity across Windows and Linux using clear WMI/ACPI method names.
+/// Platform-specific subclasses (WindowsHardwareBackend, LinuxHardwareBackend) only need to implement raw method dispatch.
+/// </summary>
+public abstract class AcerHardwareBackend : IHardwareBackend
 {
-    private const string WmiNamespace = @"\\.\root\wmi";
-    private const string GamingClassName = "AcerGamingFunction";
-    private const string GenericClassName = "APGeAction";
-    private FanMode _lastMode = FanMode.Auto;
+    protected FanMode _lastMode = FanMode.Auto;
 
-    public string BackendName => "Windows WMI (root\\wmi -> AcerGamingFunction)";
-    public bool IsSupported => OperatingSystem.IsWindows();
+    public abstract string BackendName { get; }
+    public abstract bool IsSupported { get; }
 
-    public async Task<SensorData> GetSensorDataAsync()
+    // Platform-specific WMI/ACPI method dispatchers
+    public abstract ulong InvokeGamingFunctionSync(string methodName, ulong input);
+    public abstract ulong InvokeGenericMethodSync(string methodName, ulong input);
+
+    public virtual Task<ulong> InvokeGamingFunctionAsync(string methodName, ulong input) =>
+        Task.Run(() => InvokeGamingFunctionSync(methodName, input));
+
+    public virtual Task<ulong> InvokeGenericMethodAsync(string methodName, ulong input) =>
+        Task.Run(() => InvokeGenericMethodSync(methodName, input));
+
+    public virtual async Task<SensorData> GetSensorDataAsync()
     {
         return await Task.Run(() =>
         {
@@ -70,7 +80,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetFanModeAsync(
+    public virtual async Task<bool> SetFanModeAsync(
         FanMode mode,
         bool coolBoost,
         int cpuPercentage = 50,
@@ -82,6 +92,7 @@ public class WindowsWmiBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 FanMode effectiveCpuMode = cpuMode ?? (mode == FanMode.Custom ? (cpuAuto ? FanMode.Auto : FanMode.Custom) : mode);
@@ -154,10 +165,11 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetCoolBoostAsync(bool enabled)
+    public virtual async Task<bool> SetCoolBoostAsync(bool enabled)
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // 1. APGeAction.SetFunction(0x00010007 for ON, 0x00000007 for OFF)
@@ -177,7 +189,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> GetCoolBoostAsync()
+    public virtual async Task<bool> GetCoolBoostAsync()
     {
         return await Task.Run(() =>
         {
@@ -206,10 +218,11 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetFanSpeedAsync(int fanIndex, int percentage)
+    public virtual async Task<bool> SetFanSpeedAsync(int fanIndex, int percentage)
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 ulong input = (ulong)((Math.Clamp(percentage, 0, 100) << 8) | (fanIndex & 0xFF));
@@ -224,10 +237,11 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetPowerModeAsync(PowerMode mode)
+    public virtual async Task<bool> SetPowerModeAsync(PowerMode mode)
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // Setting ID 0x0B (11) is Operation Mode in AcerGamingFunction.SetGamingMiscSetting
@@ -243,29 +257,26 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetRgbKeyboardAsync(RgbConfig config)
+    public virtual async Task<bool> SetRgbKeyboardAsync(RgbConfig config)
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // Brightness setting (0-100)
                 SetKbBacklightAsync(config.Brightness * 25).GetAwaiter().GetResult();
 
                 // Set 4-zone colors: wire format (B << 24) | (G << 16) | (R << 8) | zoneId
-                // Zone 1: ID 1
                 ulong z1Input = (ulong)((uint)(config.Zone1.B << 24) | (uint)(config.Zone1.G << 16) | (uint)(config.Zone1.R << 8) | 1u);
                 InvokeGamingFunctionSync("SetGamingLEDColor", z1Input);
 
-                // Zone 2: ID 2
                 ulong z2Input = (ulong)((uint)(config.Zone2.B << 24) | (uint)(config.Zone2.G << 16) | (uint)(config.Zone2.R << 8) | 2u);
                 InvokeGamingFunctionSync("SetGamingLEDColor", z2Input);
 
-                // Zone 3: ID 3
                 ulong z3Input = (ulong)((uint)(config.Zone3.B << 24) | (uint)(config.Zone3.G << 16) | (uint)(config.Zone3.R << 8) | 3u);
                 InvokeGamingFunctionSync("SetGamingLEDColor", z3Input);
 
-                // Zone 4: ID 4
                 ulong z4Input = (ulong)((uint)(config.Zone4.B << 24) | (uint)(config.Zone4.G << 16) | (uint)(config.Zone4.R << 8) | 4u);
                 InvokeGamingFunctionSync("SetGamingLEDColor", z4Input);
 
@@ -282,10 +293,11 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetKbBacklightAsync(int brightnessPercentage)
+    public virtual async Task<bool> SetKbBacklightAsync(int brightnessPercentage)
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 int clamped = Math.Clamp(brightnessPercentage, 0, 100);
@@ -326,7 +338,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<int> GetKbBacklightAsync()
+    public virtual async Task<int> GetKbBacklightAsync()
     {
         return await Task.Run(() =>
         {
@@ -345,7 +357,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetKbTimeoutAsync(bool enabled)
+    public virtual async Task<bool> SetKbTimeoutAsync(bool enabled)
     {
         return await Task.Run(() =>
         {
@@ -377,7 +389,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> GetKbTimeoutAsync()
+    public virtual async Task<bool> GetKbTimeoutAsync()
     {
         return await Task.Run(() =>
         {
@@ -396,7 +408,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<PowerMode> GetPowerModeAsync()
+    public virtual async Task<PowerMode> GetPowerModeAsync()
     {
         return await Task.Run(() =>
         {
@@ -413,7 +425,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetLcdOverdriveAsync(bool enabled)
+    public virtual async Task<bool> SetLcdOverdriveAsync(bool enabled)
     {
         return await Task.Run(() =>
         {
@@ -431,7 +443,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> GetLcdOverdriveAsync()
+    public virtual async Task<bool> GetLcdOverdriveAsync()
     {
         return await Task.Run(() =>
         {
@@ -448,7 +460,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetWinKeyLockAsync(bool locked)
+    public virtual async Task<bool> SetWinKeyLockAsync(bool locked)
     {
         return await Task.Run(() =>
         {
@@ -466,7 +478,7 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<bool> SetMiscSettingAsync(uint settingId, uint value)
+    public virtual async Task<bool> SetMiscSettingAsync(uint settingId, uint value)
     {
         return await Task.Run(() =>
         {
@@ -483,31 +495,11 @@ public class WindowsWmiBackend : IHardwareBackend
         });
     }
 
-    public async Task<ulong> GetMiscSettingAsync(uint settingId)
+    public virtual async Task<ulong> GetMiscSettingAsync(uint settingId)
     {
         return await Task.Run(() =>
         {
             return InvokeGamingFunctionSync("GetGamingMiscSetting", settingId);
         });
-    }
-
-    public Task<ulong> InvokeGamingFunctionAsync(string methodName, ulong input)
-    {
-        return Task.Run(() => InvokeGamingFunctionSync(methodName, input));
-    }
-
-    public Task<ulong> InvokeGenericMethodAsync(string methodName, ulong input)
-    {
-        return Task.Run(() => InvokeGenericMethodSync(methodName, input));
-    }
-
-    private ulong InvokeGamingFunctionSync(string methodName, ulong input)
-    {
-        return NativeWmi.ExecuteGamingFunction(methodName, input);
-    }
-
-    private ulong InvokeGenericMethodSync(string methodName, ulong input)
-    {
-        return NativeWmi.ExecuteGenericMethod(methodName, input);
     }
 }
