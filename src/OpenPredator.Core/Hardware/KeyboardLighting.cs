@@ -58,7 +58,7 @@ public abstract partial class AcerHardwareBackend
                 {
                     ulong q = 1UL | ((ulong)bkHotkey << 8) | 0x80000UL;
                     ulong qRes = InvokeGenericMethodSync("GetFunction", q);
-                    if ((qRes & 0xFF) == 0 && qRes > 0)
+                    if ((qRes & 0xFF) == 0)
                     {
                         timeoutEnabled = ((qRes >> 40) & 0xFF) == 30;
                     }
@@ -96,7 +96,7 @@ public abstract partial class AcerHardwareBackend
                 const int bkHotkey = 132;
                 ulong q = 1UL | ((ulong)bkHotkey << 8) | 0x80000UL;
                 ulong res = InvokeGenericMethodSync("GetFunction", q);
-                if ((res & 0xFF) == 0 && res > 0)
+                if ((res & 0xFF) == 0)
                 {
                     return (int)((res >> 32) & 0xFF);
                 }
@@ -118,7 +118,7 @@ public abstract partial class AcerHardwareBackend
                 {
                     ulong q = 1UL | ((ulong)bkHotkey << 8) | 0x80000UL;
                     ulong qRes = InvokeGenericMethodSync("GetFunction", q);
-                    if ((qRes & 0xFF) == 0 && qRes > 0)
+                    if ((qRes & 0xFF) == 0)
                     {
                         currentBrightness = (int)((qRes >> 32) & 0xFF);
                     }
@@ -147,7 +147,7 @@ public abstract partial class AcerHardwareBackend
                 const int bkHotkey = 132;
                 ulong q = 1UL | ((ulong)bkHotkey << 8) | 0x80000UL;
                 ulong res = InvokeGenericMethodSync("GetFunction", q);
-                if ((res & 0xFF) == 0 && res > 0)
+                if ((res & 0xFF) == 0)
                 {
                     return ((res >> 40) & 0xFF) == 30;
                 }

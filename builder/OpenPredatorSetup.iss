@@ -6,6 +6,15 @@
 #ifndef VersionInfoVersion
 #define VersionInfoVersion "0.0.0.0"
 #endif
+#ifndef SourceDir
+#define SourceDir "..\dist\release\win-x64"
+#endif
+#ifndef OutputFilename
+#define OutputFilename "OpenPredator-v" + MyAppVersion + "-win-x64-Setup"
+#endif
+#ifndef IsDev
+#define IsDev "0"
+#endif
 #define MyAppPublisher "KRWCLASSIC"
 #define MyAppURL "https://github.com/KRWCLASSIC/OpenPredator"
 #define MyAppExeName "openpredator-gui.exe"
@@ -34,7 +43,7 @@ UsePreviousSetupType=no
 UsePreviousTasks=no
 LicenseFile=..\LICENSE
 OutputDir=..\dist\installer
-OutputBaseFilename=OpenPredator-v{#MyAppVersion}-win-x64-Setup
+OutputBaseFilename={#OutputFilename}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -56,6 +65,10 @@ Name: "custom"; Description: "Custom Installation"; Flags: iscustom
 Name: "gui"; Description: "OpenSense (Native C# Desktop Control Center)"; Types: full gui_only custom
 Name: "daemon"; Description: "OpenPredator Background Service (Auto-starts on boot, 1:1 OEM IPC wire)"; Types: full headless custom
 Name: "cli"; Description: "OpenPredator CLI Utility (openpredator.exe, integrated with System PATH)"; Types: full headless custom
+#if IsDev == "1"
+Name: "tools"; Description: "OpenPredator Testing & Diagnostics Suite (Interactive TUI)"; Types: full custom; Flags: dontinheritcheck
+Name: "symbols"; Description: "Debug Symbols (.pdb) for Crash Analysis"; Flags: dontinheritcheck
+#endif
 Name: "ifeo_bridge"; Description: "Stock NitroSense / PredatorSense Bridge Plugin (via IFEOPredatorPatcher) [Coming Soon]"; Flags: dontinheritcheck
 Name: "webview_ui"; Description: "OpenPredatorUI WebView Edition (Experimental Web App) [Coming Soon]"; Flags: dontinheritcheck
 
@@ -67,9 +80,13 @@ Name: "pssvc_manage\reenable_pssvc"; Description: "Restore / Re-enable OEM Preda
 
 [Files]
 Source: "{srcexe}"; DestDir: "{app}"; DestName: "OpenPredator-Setup.exe"; Flags: external ignoreversion; Check: ShouldCopySetupExe
-Source: "..\dist\win-x64\openpredator-gui.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: gui
-Source: "..\dist\win-x64\openpredator-service.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: daemon
-Source: "..\dist\win-x64\openpredator.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: cli
+Source: "{#SourceDir}\openpredator-gui.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: gui
+Source: "{#SourceDir}\openpredator-service.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: daemon
+Source: "{#SourceDir}\openpredator.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: cli
+#if IsDev == "1"
+Source: "{#SourceDir}\openpredator-testsuite.exe"; DestDir: "{app}"; Flags: ignoreversion; Components: tools
+Source: "{#SourceDir}\Intermediate\*.pdb"; DestDir: "{app}\Intermediate"; Flags: ignoreversion; Components: symbols
+#endif
 Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; DestName: "README.txt"; Flags: ignoreversion
 

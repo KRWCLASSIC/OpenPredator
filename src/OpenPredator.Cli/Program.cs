@@ -2,7 +2,9 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using OpenPredator.Client;
+using OpenPredator.Core.Backends;
 using OpenPredator.Core.Enums;
+using OpenPredator.Core.Hardware;
 using OpenPredator.Core.Models;
 using OpenPredator.Core.Services;
 
@@ -51,6 +53,9 @@ public static class Program
             case "watch":
             case "top":
                 return await WatchStatusAsync(client);
+
+            case "capabilities":
+                return await HandleCapabilitiesCommandAsync(client, args);
 
             case "fan":
             case "fans":
@@ -133,9 +138,10 @@ public static class Program
 
         Console.WriteLine("Usage: openpredator <command> [arguments]\n");
 
-        Console.WriteLine("\x1b[1;36mMonitoring & Telemetry:\x1b[0m");
+        Console.WriteLine("\x1b[1;36mMonitoring & Hardware Info:\x1b[0m");
         Console.WriteLine("  status / sensors                    Display live temperatures, fan speeds & GPU metrics");
-        Console.WriteLine("  watch / top                         Live terminal dashboard updating every second\n");
+        Console.WriteLine("  watch / top                         Live terminal dashboard updating every second");
+        Console.WriteLine("  capabilities [-v|--verbose]         Inspect verified motherboard capabilities & diagnostic log\n");
 
         Console.WriteLine("\x1b[1;36mFan & Cooling:\x1b[0m");
         Console.WriteLine("  fan auto [-c|--coolboost]           Set fan mode to Auto (firmware dynamic curve)");
@@ -232,8 +238,18 @@ public static class Program
     {
         if (args.Length < 2)
         {
-            Console.WriteLine("Usage: openpredator fan auto | max | custom <cpu%> <gpu%> [-c|--coolboost] [-nc|--no-coolboost]");
-            return 1;
+            FanMode curMode = client.IsConnected
+                ? await client.GetFanModeAsync()
+                : await HardwareManager.Instance.GetFanModeAsync();
+            bool cb = client.IsConnected
+                ? await client.GetCoolBoostAsync()
+                : await HardwareManager.Instance.GetCoolBoostAsync();
+            var sensors = client.IsConnected
+                ? await client.GetSensorsAsync()
+                : await HardwareManager.Instance.GetSensorsAsync();
+
+            PrintOk($"Fan Mode: \x1b[1;36m{curMode}\x1b[0m | CPU: \x1b[1;37m{sensors.CpuFanRpm} RPM\x1b[0m | GPU: \x1b[1;37m{sensors.GpuFanRpm} RPM\x1b[0m | CoolBoost: {(cb ? "\x1b[1;32mEnabled\x1b[0m" : "\x1b[90mDisabled\x1b[0m")}");
+            return 0;
         }
 
         string sub = args[1].ToLowerInvariant();
@@ -414,13 +430,18 @@ public static class Program
 
     private static async Task<int> HandleModeCommandAsync(IOpenPredatorClient client, string[] args)
     {
-        var caps = HardwareManager.DetectCapabilities();
+        IHardwareBackend backend = client.IsConnected
+            ? new ClientHardwareBackend(client)
+            : HardwareManager.CreateBestBackend();
+        var caps = CapabilityProbe.Probe(backend);
 
         if (args.Length < 2)
         {
-            string avail = caps.IsPredator ? "quiet | default | perf | turbo" : "quiet | default | perf";
-            Console.WriteLine($"Usage: openpredator mode {avail}");
-            return 1;
+            var curMode = client.IsConnected
+                ? await client.GetPowerModeAsync()
+                : await HardwareManager.Instance.GetPowerModeAsync();
+            PrintOk($"Power Mode: \x1b[1;36m{curMode}\x1b[0m");
+            return 0;
         }
 
         string rawMode = args[1].ToLowerInvariant();
@@ -457,7 +478,16 @@ public static class Program
 
     private static async Task<int> HandleLcdCommandAsync(IOpenPredatorClient client, string[] args)
     {
-        var caps = HardwareManager.DetectCapabilities();
+        IHardwareBackend backend = client.IsConnected
+            ? new ClientHardwareBackend(client)
+            : HardwareManager.CreateBestBackend();
+        var caps = CapabilityProbe.Probe(backend);
+
+        if (!caps.SupportsLcdOverdrive)
+        {
+            PrintNotice($"LCD Overdrive is not supported on this display panel / device ({caps.ModelName}).");
+            return 1;
+        }
 
         if (args.Length < 2)
         {
@@ -488,8 +518,11 @@ public static class Program
     {
         if (args.Length < 2)
         {
-            Console.WriteLine("Usage: openpredator winkey lock | unlock");
-            return 1;
+            bool isLocked = client.IsConnected
+                ? await client.GetWinKeyLockAsync()
+                : await HardwareManager.Instance.GetWinKeyLockAsync();
+            PrintOk($"Windows Key: {(isLocked ? "\x1b[1;33mLocked (Disabled)\x1b[0m" : "\x1b[1;32mUnlocked (Active)\x1b[0m")}");
+            return 0;
         }
 
         bool lockKey = args[1].Equals("lock", StringComparison.OrdinalIgnoreCase) || args[1].Equals("on", StringComparison.OrdinalIgnoreCase) || args[1] == "1";
@@ -601,7 +634,16 @@ public static class Program
 
     private static async Task<int> HandleBrightnessCommandAsync(IOpenPredatorClient client, string[] args)
     {
-        if (args.Length < 2 || !int.TryParse(args[1], out int pct))
+        if (args.Length < 2)
+        {
+            int cur = client.IsConnected
+                ? await client.GetKbBacklightAsync()
+                : await HardwareManager.Instance.GetKbBacklightAsync();
+            PrintOk($"Keyboard Backlight Brightness: \x1b[1;36m{cur}%\x1b[0m");
+            return 0;
+        }
+
+        if (!int.TryParse(args[1], out int pct))
         {
             Console.WriteLine("Usage: openpredator brightness <0-100>");
             return 1;
@@ -613,7 +655,17 @@ public static class Program
 
         if (success)
         {
-            PrintOk($"Keyboard Backlight Brightness: \x1b[1;36m{pct}%\x1b[0m");
+            int actual = client.IsConnected
+                ? await client.GetKbBacklightAsync()
+                : await HardwareManager.Instance.GetKbBacklightAsync();
+            if (actual != pct)
+            {
+                PrintOk($"Keyboard Backlight Brightness: \x1b[1;36m{actual}%\x1b[0m \x1b[90m(hardware quantized to 5-stage step)\x1b[0m");
+            }
+            else
+            {
+                PrintOk($"Keyboard Backlight Brightness: \x1b[1;36m{actual}%\x1b[0m");
+            }
         }
         else
         {
@@ -675,6 +727,58 @@ public static class Program
                 Console.WriteLine(json);
                 return 0;
         }
+    }
+
+    private static Task<int> HandleCapabilitiesCommandAsync(IOpenPredatorClient client, string[] args)
+    {
+        IHardwareBackend backend = client.IsConnected
+            ? new ClientHardwareBackend(client)
+            : HardwareManager.CreateBestBackend();
+
+        var caps = CapabilityProbe.Probe(backend);
+
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.WriteLine("=================================================");
+        Console.WriteLine("        Hardware Capabilities & Discovery        ");
+        Console.WriteLine("=================================================");
+        Console.ResetColor();
+
+        string platform = OperatingSystem.IsWindows()
+            ? "Windows (Kernel ACPI-WMI & SMBIOS)"
+            : (OperatingSystem.IsLinux() ? "Linux (wmi-bmof / ec_sys & sysfs)" : "Generic");
+
+        string modelDisplay = !string.IsNullOrWhiteSpace(caps.PartNumber)
+            ? $"{caps.ModelName} (Part: {caps.PartNumber})"
+            : caps.ModelName;
+        Console.WriteLine($"  Device Model          : \x1b[1;37m{modelDisplay}\x1b[0m");
+        Console.WriteLine($"  Hardware Series       : {(caps.IsPredator ? "\x1b[1;36mPredator Series\x1b[0m" : "\x1b[1;32mNitro Series\x1b[0m")}");
+        Console.WriteLine($"  Platform Driver       : \x1b[1;37m{platform}\x1b[0m");
+        Console.WriteLine($"  Detected Fans         : \x1b[1;37m{caps.FanCount} Fans\x1b[0m (CPU, GPU{(caps.HasSystemFan ? ", Aux/System" : "")})");
+        Console.WriteLine($"  CoolBoost Technology  : {(caps.SupportsCoolBoost ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  Hardware Power Modes  : {(caps.SupportsOperatingModes ? $"\x1b[1;32mSupported\x1b[0m ({string.Join(", ", caps.SupportedOperatingModes)})" : "\x1b[90mNot Supported (CoolBoost Fan Table)\x1b[0m")}");
+        Console.WriteLine($"  Keyboard Backlight    : {(caps.IsRgbKeyboard ? "\x1b[1;35m4-Zone RGB Matrix\x1b[0m" : "\x1b[1;31mMonochrome Red/White\x1b[0m")}");
+        Console.WriteLine($"  Backlight Timeout     : {(caps.SupportsBacklightTimeout ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  LCD Overdrive         : {(caps.SupportsLcdOverdrive ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  Hardware MUX Switch   : {(caps.SupportsDiscreteGpuSwitch ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  Windows Key Lock      : {(caps.SupportsWinKeyLock ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  CPU Overclocking      : {(caps.SupportsCpuOverclock ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+        Console.WriteLine($"  GPU Overclocking      : {(caps.SupportsGpuOverclock ? "\x1b[1;32mSupported\x1b[0m" : "\x1b[90mNot Supported\x1b[0m")}");
+
+        bool verbose = args.Length > 1 && (args[1] is "--verbose" or "-v" or "--diag");
+        if (verbose && !string.IsNullOrWhiteSpace(caps.DiagnosticsLog))
+        {
+            Console.WriteLine();
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.WriteLine("--- Motherboard Diagnostic Log ---");
+            Console.WriteLine(caps.DiagnosticsLog.TrimEnd());
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.WriteLine("\n\x1b[90mPass --verbose to view raw firmware ACPI/WMI query responses.\x1b[0m");
+        }
+
+        return Task.FromResult(0);
     }
 }
 

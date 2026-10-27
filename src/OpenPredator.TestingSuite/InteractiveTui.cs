@@ -694,6 +694,20 @@ public class InteractiveTui
 
         servicesBranch.Children.Add(new TreeNode
         {
+            Id = "hw_caps_probe",
+            Title = "Probe Hardware Capabilities (Motherboard ACPI/WMI & SMBIOS)",
+            Type = TreeNodeType.Action,
+            GetValueText = () => $"[{_caps.FanCount} Fans, {(_caps.SupportsOperatingModes ? "Modes" : "CoolBoost")}, {(_caps.IsRgbKeyboard ? "RGB" : "Mono")}]",
+            OnActivateAsync = async () =>
+            {
+                var refreshed = HardwareManager.DetectCapabilities();
+                _statusMessage = $"Capabilities Verified: {refreshed.ModelName} ({refreshed.FanCount} Fans, RGB: {refreshed.IsRgbKeyboard}, Modes: {refreshed.SupportsOperatingModes}, CoolBoost: {refreshed.SupportsCoolBoost})";
+                await Task.CompletedTask;
+            }
+        });
+
+        servicesBranch.Children.Add(new TreeNode
+        {
             Id = "wmi_reset",
             Title = "Reset WMI Cache (Force Re-Init)",
             Type = TreeNodeType.Action,

@@ -1,0 +1,142 @@
+name: Manual Cross-Platform Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      flavour:
+        description: 'Build Flavour'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - release
+          - dev
+      platform:
+        description: 'Target Platform'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - windows
+          - linux
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows Packages
+    runs-on: windows-latest
+    if: inputs.platform == 'both' || inputs.platform == 'windows'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress
+
+      - name: Resolve Version
+        shell: pwsh
+        run: |
+          $content = Get-Content Directory.Build.props -Raw
+          $m = [regex]::Match($content, '<Version>(.*?)</Version>')
+          $ver = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "1.1.0" }
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Windows (Release)
+        if: inputs.flavour == 'both' || inputs.flavour == 'release'
+        shell: pwsh
+        run: |
+          .\build.bat pack
+
+      - name: Build Windows (Dev)
+        if: inputs.flavour == 'both' || inputs.flavour == 'dev'
+        shell: pwsh
+        run: |
+          .\build.bat pack --dev
+
+      - name: Upload Windows Setup Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-win-x64-Setup
+          path: dist/installer/*.exe
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Upload Windows Portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-win-x64-portable
+          path: dist/portable/*win*.zip
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Upload Full Windows Dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-dist-win-x64
+          path: dist/
+          retention-days: 90
+
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-latest
+    if: inputs.platform == 'both' || inputs.platform == 'linux'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT Linux Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev build-essential
+
+      - name: Resolve Version
+        run: |
+          VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.1.0")
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Build Linux (Release)
+        if: inputs.flavour == 'both' || inputs.flavour == 'release'
+        run: |
+          chmod +x ./build.sh
+          ./build.sh pack
+
+      - name: Build Linux (Dev)
+        if: inputs.flavour == 'both' || inputs.flavour == 'dev'
+        run: |
+          chmod +x ./build.sh
+          ./build.sh pack --dev
+
+      - name: Upload Linux Portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-linux-x64-portable
+          path: dist/portable/*linux*.zip
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Upload Full Linux Dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-dist-linux-x64
+          path: dist/
+          retention-days: 90

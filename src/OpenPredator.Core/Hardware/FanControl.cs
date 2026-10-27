@@ -123,7 +123,7 @@ public abstract partial class AcerHardwareBackend
             {
                 // 1. APGeAction.GetFunction(0x0207) -> status in byte 0 (0 = success), enabled state in byte 1 (1 = ON)
                 ulong res = InvokeGenericMethodSync("GetFunction", 0x0207UL);
-                if ((res & 0xFF) == 0 && res > 0)
+                if ((res & 0xFF) == 0)
                 {
                     return ((res >> 8) & 0xFF) == 1;
                 }

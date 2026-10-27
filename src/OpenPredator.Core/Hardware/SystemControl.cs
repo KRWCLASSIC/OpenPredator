@@ -22,6 +22,27 @@ public abstract partial class AcerHardwareBackend
         });
     }
 
+    public virtual async Task<bool> GetWinKeyLockAsync()
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                // NitroSense: AcerGamingFunction.GetGamingProfile(0) -> Byte 3 is WinKeyLock (1 = locked, 0 = unlocked)
+                ulong res = InvokeGamingFunctionSync("GetGamingProfile", 0UL);
+                if ((res & 0xFF) == 0)
+                {
+                    return ((res >> 24) & 0xFF) == 1;
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        });
+    }
+
     public virtual async Task<bool> SetMiscSettingAsync(uint settingId, uint value)
     {
         return await Task.Run(() =>

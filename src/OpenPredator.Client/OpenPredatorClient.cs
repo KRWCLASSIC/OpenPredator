@@ -35,6 +35,7 @@ public interface IOpenPredatorClient : IDisposable
     Task<bool> SetLcdOverdriveAsync(bool enabled, CancellationToken ct = default);
     Task<bool> GetLcdOverdriveAsync(CancellationToken ct = default);
     Task<bool> SetWinKeyLockAsync(bool locked, CancellationToken ct = default);
+    Task<bool> GetWinKeyLockAsync(CancellationToken ct = default);
 }
 
 public class OpenPredatorClient : IOpenPredatorClient
@@ -403,6 +404,19 @@ public class OpenPredatorClient : IOpenPredatorClient
         ulong input = ((locked ? 1UL : 0UL) << 24) | 2UL;
         var res = await SendCommandAsync(ServiceCommand.GamingProfileWmiSetFunction, new object[] { input }, ct);
         return res.Count > 0;
+    }
+
+    public async Task<bool> GetWinKeyLockAsync(CancellationToken ct = default)
+    {
+        var res = await SendCommandAsync(ServiceCommand.GamingProfileWmiGetFunction, new object[] { 0u }, ct);
+        if (res.Count > 0 && res[0].Length >= 4)
+        {
+            ulong val = res[0].Length >= 8
+                ? BinaryPrimitives.ReadUInt64LittleEndian(res[0])
+                : BinaryPrimitives.ReadUInt32LittleEndian(res[0]);
+            return (val & 0xFF) == 0 && (((val >> 24) & 0xFF) == 1);
+        }
+        return false;
     }
 
     public async Task<List<byte[]>> SendCommandAsync(ServiceCommand command, object[] args, CancellationToken ct = default)

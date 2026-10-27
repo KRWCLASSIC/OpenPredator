@@ -102,6 +102,8 @@ internal static class SettingsView
                             CommonComponents.CreateDiagRow("Laptop Model", AppState.Caps.ModelName),
                             CommonComponents.CreateDiagRow("Hardware Platform", AppState.Caps.IsPredator ? "Acer Predator Series" : "Acer Nitro Series"),
                             CommonComponents.CreateDiagRow("Keyboard Backlight", AppState.Caps.IsRgbKeyboard ? "4-Zone RGB Matrix" : "Monochrome 5-State Zone"),
+                            CommonComponents.CreateDiagRow("Installed Cooling", $"{AppState.Caps.FanCount} Fans (CPU, GPU{(AppState.Caps.HasSystemFan ? ", Aux/System" : "")})"),
+                            CommonComponents.CreateDiagRow("Operating Modes", AppState.Caps.SupportsOperatingModes ? "Firmware Verified (4 Profiles)" : (AppState.Caps.SupportsCoolBoost ? "CoolBoost Fan Table" : "Standard Control")),
                             CommonComponents.CreateDiagRow("IPC Pipe Channel", "predatorsense_service_namedpipe"),
                             CommonComponents.CreateDiagRow("Process Privilege", GuiSettingsManager.IsAdministrator() ? "[ADMIN] Elevated" : "Standard User"),
                             CommonComponents.CreateDiagRow("Engine Version", typeof(SettingsView).Assembly.GetName().Version is { } v ? $"v{v.Major}.{v.Minor}.{v.Build}" : "Undefined")

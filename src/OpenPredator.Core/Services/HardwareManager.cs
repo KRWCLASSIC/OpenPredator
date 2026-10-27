@@ -5,6 +5,7 @@ using OpenPredator.Core.Backends;
 using OpenPredator.Core.Backends.Linux;
 using OpenPredator.Core.Backends.Windows;
 using OpenPredator.Core.Enums;
+using OpenPredator.Core.Hardware;
 using OpenPredator.Core.Models;
 
 namespace OpenPredator.Core.Services;
@@ -29,85 +30,25 @@ public sealed class HardwareManager
     public FanConfig CurrentFanConfig { get; set; } = ConfigManager.Instance.Current.Fan;
     public RgbConfig CurrentRgbConfig { get; set; } = ConfigManager.Instance.Current.Rgb;
     public PowerMode CurrentPowerMode { get; set; } = ConfigManager.Instance.Current.PowerMode;
-    public DeviceCapabilities Capabilities { get; private set; } = DetectCapabilities();
+    public DeviceCapabilities Capabilities { get; private set; }
 
     public HardwareManager()
     {
         Backend = CreateBestBackend();
+        Capabilities = DetectCapabilities(Backend);
         _preferredAutoCoolBoost = ConfigManager.Instance.Current.Fan.CoolBoost;
     }
 
-    public static DeviceCapabilities DetectCapabilities()
+    public static DeviceCapabilities DetectCapabilities(IHardwareBackend? backend = null)
     {
-        string model = "Acer Gaming Laptop";
-        bool isPredator = false;
-        bool isRgb = false;
-        bool lcdOd = false;
-        bool mux = false;
-        bool cpuOc = false;
-        bool gpuOc = false;
-
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                // 1. Read System Model & OEM Hardware Table via Direct Kernel SMBIOS
-                var smbios = SmbiosReader.GetSystemInfo();
-                if (!string.IsNullOrWhiteSpace(smbios.ProductName) && smbios.ProductName != "Acer Gaming Laptop")
-                {
-                    model = smbios.ProductName;
-                }
-                isPredator = model.Contains("predator", StringComparison.OrdinalIgnoreCase)
-                    || smbios.Family.Contains("predator", StringComparison.OrdinalIgnoreCase);
-
-                // 2. Hardware Profile Probe (AcerGamingFunction.GetGamingProfile)
-                ulong profRaw = NativeWmi.ExecuteGamingFunction("GetGamingProfile", 0UL);
-
-                // LCD Overdrive (Bits 48-55 of hardware profile bitmask)
-                if (profRaw > 0)
-                {
-                    int lcdVal = (int)((profRaw >> 48) & 0xFF);
-                    lcdOd = lcdVal < 2;
-                }
-
-                // Discrete GPU / MUX Switchable Graphics (Misc Setting ID 9)
-                ulong dGpuRaw = NativeWmi.ExecuteGamingFunction("GetGamingMiscSetting", 9UL);
-                mux = (dGpuRaw & 0xFF00) == 0x0300;
-
-                // 3. Overclocking & Boost Capabilities (Native Acer Predator Overclock)
-                if (isPredator)
-                {
-                    ulong gpuMisc = NativeWmi.ExecuteGamingFunction("GetGamingMiscSetting", 0x09UL);
-                    int gpuVal = (int)((gpuMisc >> 8) & 0xFF);
-                    gpuOc = (gpuMisc & 0xFF) == 0 && gpuVal > 0 && gpuVal != 0xFF;
-
-                    ulong cpuMisc = NativeWmi.ExecuteGamingFunction("GetGamingMiscSetting", 0x0AUL);
-                    int cpuVal = (int)((cpuMisc >> 8) & 0xFF);
-                    cpuOc = (cpuMisc & 0xFF) == 0 && cpuVal > 0 && cpuVal != 0xFF;
-                }
-
-                // 4. Keyboard Lighting Architecture Probe
-                // 4-Zone RGB vs Monochrome: Parsed strictly from Acer OEM SMBIOS Type 171 Feature 19
-                isRgb = smbios.HasRgbKeyboard;
-            }
-            catch { }
-        }
-
-        return new DeviceCapabilities
-        {
-            ModelName = model,
-            IsPredator = isPredator,
-            IsRgbKeyboard = isRgb,
-            SupportsLcdOverdrive = lcdOd,
-            SupportsDiscreteGpuSwitch = mux,
-            SupportsCpuOverclock = cpuOc,
-            SupportsGpuOverclock = gpuOc
-        };
+        backend ??= CreateBestBackend();
+        return CapabilityProbe.Probe(backend);
     }
 
     public void SetCustomBackend(IHardwareBackend backend)
     {
         Backend = backend ?? throw new ArgumentNullException(nameof(backend));
+        Capabilities = DetectCapabilities(Backend);
     }
 
     public static IHardwareBackend CreateBestBackend()
@@ -349,5 +290,10 @@ public sealed class HardwareManager
             ConfigManager.Instance.Save(cfg with { WinKeyLock = locked });
         }
         return ok;
+    }
+
+    public async Task<bool> GetWinKeyLockAsync()
+    {
+        return await Backend.GetWinKeyLockAsync();
     }
 }

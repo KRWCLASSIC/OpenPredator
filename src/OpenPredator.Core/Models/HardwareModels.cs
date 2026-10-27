@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using OpenPredator.Core.Enums;
+
 namespace OpenPredator.Core.Models;
 
 public sealed record SensorData
@@ -21,12 +24,26 @@ public sealed record SensorData
 public sealed record DeviceCapabilities
 {
     public string ModelName { get; init; } = "Acer Gaming Laptop";
+    public string SerialNumber { get; init; } = "";
+    public string PartNumber { get; init; } = "";
     public bool IsPredator { get; init; } = false;
     public bool IsRgbKeyboard { get; init; } = false;
     public bool SupportsLcdOverdrive { get; init; } = false;
     public bool SupportsDiscreteGpuSwitch { get; init; } = false;
     public bool SupportsCpuOverclock { get; init; } = false;
     public bool SupportsGpuOverclock { get; init; } = false;
+
+    // Hardware-verified motherboard capabilities
+    public int FanCount { get; init; } = 2;
+    public bool HasCpuFan { get; init; } = true;
+    public bool HasGpuFan { get; init; } = true;
+    public bool HasSystemFan { get; init; } = false;
+    public bool SupportsCoolBoost { get; init; } = false;
+    public bool SupportsOperatingModes { get; init; } = false;
+    public IReadOnlyList<PowerMode> SupportedOperatingModes { get; init; } = [];
+    public bool SupportsWinKeyLock { get; init; } = false;
+    public bool SupportsBacklightTimeout { get; init; } = false;
+    public string DiagnosticsLog { get; init; } = "";
 }
 
 public sealed record FanConfig

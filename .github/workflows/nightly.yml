@@ -1,0 +1,181 @@
+name: Nightly Dev Drafter
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Dev Stack
+    runs-on: windows-latest
+    if: ${{ !contains(github.event.head_commit.message, '!!') }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress
+
+      - name: Resolve Version
+        shell: pwsh
+        run: |
+          $content = Get-Content Directory.Build.props -Raw
+          $m = [regex]::Match($content, '<Version>(.*?)</Version>')
+          $ver = if ($m.Success) { $m.Groups[1].Value.Trim() } else { "1.1.0" }
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Build Windows Dev Pack
+        shell: pwsh
+        run: |
+          .\build.bat pack --dev
+
+      - name: Upload Windows Setup Dev Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-win-x64-Setup-dev
+          path: dist/installer/*.exe
+          retention-days: 90
+
+      - name: Upload Windows Portable Dev ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-win-x64-portable-dev
+          path: dist/portable/*win*.zip
+          retention-days: 90
+
+      - name: Upload Full Windows Dev Dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-dist-win-x64-dev
+          path: dist/
+          retention-days: 90
+
+      - name: Stash Windows Release Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-release-windows
+          path: |
+            dist/installer/*.exe
+            dist/portable/*.zip
+          retention-days: 1
+
+  build-linux:
+    name: Build Linux Dev Stack
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '!!') }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Install NativeAOT Linux Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev build-essential
+
+      - name: Resolve Version
+        run: |
+          VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.1.0")
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Build Linux Dev Pack
+        run: |
+          chmod +x ./build.sh
+          ./build.sh pack --dev
+
+      - name: Upload Linux Portable Dev ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-v${{ env.VERSION }}-linux-x64-portable-dev
+          path: dist/portable/*linux*.zip
+          retention-days: 90
+
+      - name: Upload Full Linux Dev Dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPredator-dist-linux-x64-dev
+          path: dist/
+          retention-days: 90
+
+      - name: Stash Linux Release Files
+        uses: actions/upload-artifact@v4
+        with:
+          name: staged-release-linux
+          path: dist/portable/*.zip
+          retention-days: 1
+
+  draft-nightly:
+    name: Create Nightly Draft Release
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Staging Directory
+        run: mkdir -p release_assets
+
+      - name: Download Staged Assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: staged-release-*
+          path: release_assets
+          merge-multiple: true
+
+      - name: Prepare Assets & Generate SHA256 Checksums
+        working-directory: release_assets
+        run: |
+          find . -mindepth 2 -type f -exec mv -t . {} + || true
+          find . -type d -empty -delete || true
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Determine Version & Tag
+        id: vars
+        run: |
+          VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.1.0")
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-7)
+          TAG="nightly-${SHORT_SHA}"
+          TITLE="OpenPredator Nightly ${VERSION} (${SHORT_SHA})"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up older unpublished draft releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DRAFT_IDS=$(gh api repos/${{ github.repository }}/releases --jq '.[] | select(.draft == true and (.tag_name | startswith("nightly-"))) | .id')
+          for id in $DRAFT_IDS; do
+            echo "Deleting older nightly draft release ID: $id"
+            gh api -X DELETE "repos/${{ github.repository }}/releases/$id" || true
+          done
+
+      - name: Create Nightly Draft Release on GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.title }}
+          draft: true
+          prerelease: true
+          files: release_assets/*
+          generate_release_notes: true

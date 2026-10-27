@@ -26,8 +26,11 @@ public interface IHardwareBackend
     Task<bool> SetLcdOverdriveAsync(bool enabled);
     Task<bool> GetLcdOverdriveAsync();
     Task<bool> SetWinKeyLockAsync(bool locked);
+    Task<bool> GetWinKeyLockAsync();
 
     // Raw WMI / ACPI Pass-Through
+    ulong InvokeGamingFunctionSync(string methodName, ulong input);
+    ulong InvokeGenericMethodSync(string methodName, ulong input);
     Task<ulong> InvokeGamingFunctionAsync(string methodName, ulong input);
     Task<ulong> InvokeGenericMethodAsync(string methodName, ulong input);
 }

@@ -18,3 +18,4 @@ artifacts/
 ghidra_decomp/
 
 .*
+!.github/

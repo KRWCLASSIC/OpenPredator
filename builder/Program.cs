@@ -17,14 +17,12 @@ public static class Program
 
     private static string FindRepoRoot()
     {
-        // 1. Check current working directory
         string cwd = Directory.GetCurrentDirectory();
         if (File.Exists(Path.Combine(cwd, "OpenPredator.sln")))
         {
             return cwd;
         }
 
-        // 2. Search upward from AppContext.BaseDirectory
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir != null)
         {
@@ -53,24 +51,6 @@ public static class Program
 
         PrintHeader(command, targetRid, options.TargetProject, options.IsDebug);
 
-        if (OperatingSystem.IsWindows() && targetRid.StartsWith("linux", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("[Notice] Cross-OS NativeAOT compilation from Windows to Linux is not supported directly.");
-            Console.WriteLine("         To build Linux native binaries, please run './build.sh' inside WSL2, Linux, or a Linux Docker container.\n");
-            Console.ResetColor();
-            return 1;
-        }
-
-        if (OperatingSystem.IsLinux() && targetRid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("[Notice] Cross-OS NativeAOT compilation from Linux to Windows is not supported directly.");
-            Console.WriteLine("         To build Windows native binaries, please run '.\\build.bat' on a Windows machine.\n");
-            Console.ResetColor();
-            return 1;
-        }
-
         var stopwatch = Stopwatch.StartNew();
 
         try
@@ -78,11 +58,11 @@ public static class Program
             int result = command switch
             {
                 "project" => await BuildProjectCommandAsync(options.TargetProject!, targetRid, options.IsDebug),
-                "all" => await BuildAllAsync(targetRid, isDebug: options.IsDebug),
-                "dev" => await BuildDevAsync(targetRid),
-                "installer" => await BuildInstallerAsync(targetRid, skipBuild: false),
-                "portable" or "zip" => await BuildPortableAsync(targetRid, skipBuild: false),
-                "pack" or "package" => await BuildPackAsync(targetRid),
+                "build" or "all" => await BuildAllAsync(targetRid, isDebug: options.IsDebug),
+                "installer" => await BuildInstallerAsync(targetRid, isDev: options.IsDebug, skipBuild: false),
+                "portable" or "zip" => await BuildPortableAsync(targetRid, isDev: options.IsDebug, skipBuild: false),
+                "pack" or "package" => await BuildPackAsync(targetRid, isDev: options.IsDebug),
+                "run" => await BuildRunAsync(targetRid, isDev: options.IsDebug),
                 "clean" => Clean(),
                 "version" or "ver" => HandleVersionCommand(options.ExtraArg),
                 _ => HandleUnknownCommand(command)
@@ -160,14 +140,16 @@ public static class Program
         Console.ResetColor();
 
         string displayCommand = targetProject != null
-            ? $"project:{targetProject} (targeted)"
+            ? $"{targetProject} (targeted)"
             : command;
 
-        string displayConfig = isDebug ? "Debug" : "Release";
+        string displayConfig = isDebug ? "Debug (--dev)" : "Release";
+        string mode = isDebug ? "dev" : "release";
 
         Console.WriteLine($"  Target Command : \x1b[1;37m{displayCommand}\x1b[0m");
         Console.WriteLine($"  Target Runtime : \x1b[1;36m{rid}\x1b[0m");
         Console.WriteLine($"  Configuration  : \x1b[1;35m{displayConfig}\x1b[0m");
+        Console.WriteLine($"  Output Folder  : \x1b[1;33mdist/{mode}/{rid}/\x1b[0m");
         Console.WriteLine($"  Project Version: \x1b[1;32mv{GetCurrentVersion()}\x1b[0m");
         Console.WriteLine($"  Repository Root: \x1b[90m{RootDir}\x1b[0m\n");
     }
@@ -181,24 +163,17 @@ public static class Program
         Console.ResetColor();
         Console.WriteLine("\nUsage: build [target] [options]\n");
         Console.WriteLine("Targets:");
-        Console.WriteLine("  all                 Release build of core components (Service, CLI, GUI) [Default]");
-        Console.WriteLine("  project:<name>      Targeted rebuild of single application (e.g. project:Gui, project:Service)");
-        Console.WriteLine("                      Resolves shorthand to OpenPredator.<Name> and outputs to dist/<rid>/");
-        Console.WriteLine("  installer           Release build + Windows Inno Setup installer packaging");
-        Console.WriteLine("  portable            Release build + Portable standalone ZIP packaging");
-        Console.WriteLine("  pack                Full release packaging (Installer + Portable ZIP + SHA256SUMS)");
-        Console.WriteLine("  dev                 Debug build including test suite (openpredator-testsuite)");
-        Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
-        Console.WriteLine("  version [new_ver]   Inspect or bump version in Directory.Build.props (auto-propagated to binaries & installer)");
-        Console.WriteLine("  help                Display this help screen\n");
-        Console.WriteLine("Target Prefix & Targeted Build Examples:");
-        Console.WriteLine("  build project:Gui         Quick release build of OpenPredator.Gui -> dist/win-x64/");
-        Console.WriteLine("  build project:Gui dev     Quick debug build of OpenPredator.Gui");
-        Console.WriteLine("  build project:Service     Quick release build of OpenPredator.Service");
-        Console.WriteLine("  build project:Cli         Quick release build of OpenPredator.Cli");
-        Console.WriteLine("  build project:TestingSuite Quick build of test suite");
-        Console.WriteLine("  windows:project:Gui       Targeted Windows build for OpenPredator.Gui");
-        Console.WriteLine("  linux:project:Cli         Targeted Linux build for OpenPredator.Cli\n");
+        Console.WriteLine("  build / all           Compile core applications (GUI, Service, CLI) [Default]");
+        Console.WriteLine("  <project>             Targeted compile: gui, cli, service, tui / testsuite");
+        Console.WriteLine("  installer             Package installer (Windows Setup Wizard / Linux Portable)");
+        Console.WriteLine("  portable / zip        Package standalone portable archive");
+        Console.WriteLine("  pack                  Full packaging pipeline (Installer + Portable + SHA256SUMS)");
+        Console.WriteLine("  run                   Compile and launch elevated service window + dist shell");
+        Console.WriteLine("  clean                 Purge dist/, .temp/, bin/, and obj/ directories");
+        Console.WriteLine("  version [new_ver]     Inspect or bump version in Directory.Build.props");
+        Console.WriteLine("  help                  Display this help screen\n");
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --dev / -d            Build debug configuration with TestingSuite (TUI) and PDBs\n");
     }
 
     private sealed record CommandLineOptions(
@@ -264,10 +239,8 @@ public static class Program
 
         for (int i = 0; i < args.Length; i++)
         {
-            string token = args[i].Trim();
+            string token = args[i].Trim().Trim('"', '\'');
             if (string.IsNullOrEmpty(token)) continue;
-
-            token = token.Trim('"', '\'');
 
             if (token.Equals("help", StringComparison.OrdinalIgnoreCase) ||
                 token.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
@@ -277,96 +250,24 @@ public static class Program
                 return new CommandLineOptions("help", targetRid, null, false, null);
             }
 
-            // Check for OS prefixes: windows:..., win:..., linux:..., lin:...
-            int colonIdx = token.IndexOf(':');
-            if (colonIdx > 0)
-            {
-                string prefix = token.Substring(0, colonIdx).ToLowerInvariant();
-                if (prefix is "windows" or "win")
-                {
-                    targetRid = "win-x64";
-                    token = token.Substring(colonIdx + 1);
-                }
-                else if (prefix is "linux" or "lin")
-                {
-                    targetRid = "linux-x64";
-                    token = token.Substring(colonIdx + 1);
-                }
-            }
-
-            // Check for --rid or -r
-            if (token.Equals("--rid", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("-r", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 < args.Length)
-                {
-                    targetRid = args[++i].Trim();
-                }
-                continue;
-            }
-            if (token.StartsWith("--rid=", StringComparison.OrdinalIgnoreCase))
-            {
-                targetRid = token.Substring(6).Trim();
-                continue;
-            }
-
-            // Check for configuration flags
-            if (token.Equals("dev", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("debug", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("--debug", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("--dev", StringComparison.OrdinalIgnoreCase) ||
+            // Configuration flags: --dev, -d, --release
+            if (token.Equals("--dev", StringComparison.OrdinalIgnoreCase) ||
                 token.Equals("-d", StringComparison.OrdinalIgnoreCase))
             {
                 isDebug = true;
-                if (command == null) command = "dev";
                 continue;
             }
-            if (token.Equals("release", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("--release", StringComparison.OrdinalIgnoreCase))
+
+            if (token.Equals("--release", StringComparison.OrdinalIgnoreCase))
             {
                 isDebug = false;
                 continue;
             }
-            if (token.Equals("-c", StringComparison.OrdinalIgnoreCase) ||
-                token.Equals("--configuration", StringComparison.OrdinalIgnoreCase))
-            {
-                if (i + 1 < args.Length)
-                {
-                    string cfg = args[++i].Trim();
-                    isDebug = cfg.Equals("Debug", StringComparison.OrdinalIgnoreCase) ||
-                              cfg.Equals("Dev", StringComparison.OrdinalIgnoreCase);
-                }
-                continue;
-            }
 
-            // Check for project flag: project:<Name>, --project:<Name>, --project=<Name>, -p:<Name>, etc.
+            // Project flag: --project <Name>, -p <Name>
             string? projCandidate = null;
-            if (token.StartsWith("project:", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("project:".Length);
-            }
-            else if (token.StartsWith("--project:", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("--project:".Length);
-            }
-            else if (token.StartsWith("--project=", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("--project=".Length);
-            }
-            else if (token.StartsWith("project=", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("project=".Length);
-            }
-            else if (token.StartsWith("-p:", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("-p:".Length);
-            }
-            else if (token.StartsWith("-p=", StringComparison.OrdinalIgnoreCase))
-            {
-                projCandidate = token.Substring("-p=".Length);
-            }
-            else if (token.Equals("--project", StringComparison.OrdinalIgnoreCase) ||
-                     token.Equals("-p", StringComparison.OrdinalIgnoreCase))
+            if (token.Equals("--project", StringComparison.OrdinalIgnoreCase) ||
+                token.Equals("-p", StringComparison.OrdinalIgnoreCase))
             {
                 if (i + 1 < args.Length)
                 {
@@ -376,24 +277,13 @@ public static class Program
 
             if (projCandidate != null)
             {
-                int subColon = projCandidate.IndexOf(':');
-                if (subColon > 0)
-                {
-                    string subConfig = projCandidate.Substring(subColon + 1);
-                    projCandidate = projCandidate.Substring(0, subColon);
-                    if (subConfig.Equals("dev", StringComparison.OrdinalIgnoreCase) ||
-                        subConfig.Equals("debug", StringComparison.OrdinalIgnoreCase))
-                    {
-                        isDebug = true;
-                    }
-                }
                 targetProject = projCandidate;
                 command = "project";
                 continue;
             }
 
             string lowerToken = token.ToLowerInvariant();
-            if (lowerToken is "all" or "installer" or "portable" or "zip" or "pack" or "package" or "clean")
+            if (lowerToken is "build" or "all" or "installer" or "portable" or "zip" or "pack" or "package" or "run" or "clean")
             {
                 command = lowerToken;
                 continue;
@@ -409,6 +299,7 @@ public static class Program
                 continue;
             }
 
+            // Direct project shorthand (e.g. build gui, build cli, build service, build tui)
             if (IsProjectNameOrAlias(token))
             {
                 targetProject = token;
@@ -438,13 +329,11 @@ public static class Program
             clean = Path.GetFileNameWithoutExtension(clean);
         }
 
-        // 1. Check known aliases
         if (ProjectAliases.TryGetValue(clean, out string? canonical))
         {
             clean = canonical;
         }
 
-        // 2. Candidate naming: automatically prepend OpenPredator. if not present
         string candidateName = clean.StartsWith("OpenPredator.", StringComparison.OrdinalIgnoreCase)
             ? clean
             : $"OpenPredator.{clean}";
@@ -469,12 +358,11 @@ public static class Program
 
         if (matchedDir == null)
         {
-            errorMessage = $"Could not resolve project '{rawInput}'. Expected directory under src/ (e.g. src/{candidateName}).\n" +
-                           $"Available application targets:\n" +
-                           $"  - Gui (OpenPredator.Gui / OpenSense)\n" +
-                           $"  - Service (OpenPredator.Service)\n" +
-                           $"  - Cli (OpenPredator.Cli)\n" +
-                           $"  - TestingSuite (OpenPredator.TestingSuite)";
+            errorMessage = $"Could not resolve project '{rawInput}'. Available application targets:\n" +
+                           $"  - gui (OpenPredator.Gui / OpenSense)\n" +
+                           $"  - service (OpenPredator.Service)\n" +
+                           $"  - cli (OpenPredator.Cli)\n" +
+                           $"  - tui (OpenPredator.TestingSuite)";
             return null;
         }
 
@@ -500,11 +388,11 @@ public static class Program
         if (!isApp)
         {
             errorMessage = $"'{matchedDir.Name}' is a class library, not an application.\n" +
-                           $"Targeted rebuilds only build executable application projects:\n" +
-                           $"  - Gui (OpenPredator.Gui / OpenSense)\n" +
-                           $"  - Service (OpenPredator.Service)\n" +
-                           $"  - Cli (OpenPredator.Cli)\n" +
-                           $"  - TestingSuite (OpenPredator.TestingSuite)";
+                           $"Targeted builds only build executable application projects:\n" +
+                           $"  - gui (OpenPredator.Gui)\n" +
+                           $"  - service (OpenPredator.Service)\n" +
+                           $"  - cli (OpenPredator.Cli)\n" +
+                           $"  - tui (OpenPredator.TestingSuite)";
             return null;
         }
 
@@ -559,9 +447,12 @@ public static class Program
         TerminateProcessForProject(resolved);
 
         string config = isDebug ? "Debug" : "Release";
+        var (distDir, intermediateDir) = DistManager.EnsureDistLayout(RootDir, rid, isDebug);
+
         Console.WriteLine($"\x1b[1;36m>>> Targeted Build: {resolved.CanonicalName} ({config}, {rid})...\x1b[0m\n");
 
-        int publishResult = await RunDotnetPublishAsync(resolved.RelativeCsprojPath, config, rid);
+        string stagingDir = Path.Combine(RootDir, ".temp", "staging", rid, resolved.CanonicalName);
+        int publishResult = await RunDotnetPublishAsync(resolved.RelativeCsprojPath, config, rid, stagingDir, isDebug);
         if (publishResult != 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
@@ -570,8 +461,10 @@ public static class Program
             return publishResult;
         }
 
-        string outputPath = Path.Combine(RootDir, "dist", rid, resolved.ExeName);
-        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Application updated: \x1b[1;37m{outputPath}\x1b[0m");
+        string finalExe = DistManager.DeployApp(stagingDir, distDir, intermediateDir, resolved.ExeName, isDebug);
+        DistManager.PrintStructureTree(RootDir, distDir);
+
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Application ready: \x1b[1;37m{Path.GetRelativePath(RootDir, finalExe)}\x1b[0m");
         return 0;
     }
 
@@ -589,9 +482,9 @@ public static class Program
                 var mAss = System.Text.RegularExpressions.Regex.Match(content, @"<AssemblyVersion>(.*?)</AssemblyVersion>");
                 var mFile = System.Text.RegularExpressions.Regex.Match(content, @"<FileVersion>(.*?)</FileVersion>");
                 Console.WriteLine($"  Directory.Build.props : Version={mVer.Groups[1].Value}, AssemblyVersion={mAss.Groups[1].Value}, FileVersion={mFile.Groups[1].Value}");
-                Console.WriteLine($"  OpenPredatorSetup.iss : (Inherits dynamically via /DMyAppVersion & /DVersionInfoVersion during build)");
+                Console.WriteLine($"  OpenPredatorSetup.iss : (Dynamically inherits from build props via /DMyAppVersion & /DVersionInfoVersion)");
             }
-            Console.WriteLine("\n\x1b[90mTo update version: build version <new_version> (e.g. 1.0.1 or 1.0.1.1)\x1b[0m\n");
+            Console.WriteLine("\n\x1b[90mTo update version: build version <new_version> (e.g. 1.1.0 or 1.1.0.1)\x1b[0m\n");
             return 0;
         }
 
@@ -600,7 +493,7 @@ public static class Program
         if (parts.Length < 2)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"[Error] Invalid version format: '{newVersion}'. Expected at least Major.Minor (e.g. 1.0.1 or 1.0.1.1).");
+            Console.WriteLine($"[Error] Invalid version format: '{newVersion}'. Expected at least Major.Minor (e.g. 1.1.0).");
             Console.ResetColor();
             return 1;
         }
@@ -626,7 +519,6 @@ public static class Program
 
         Console.WriteLine($"\x1b[1;36m>>> Updating Project Version to {semVer} ({fourPartVer})...\x1b[0m\n");
 
-        // 1. Update Directory.Build.props (Single Source of Truth)
         if (File.Exists(propsPath))
         {
             string content = File.ReadAllText(propsPath);
@@ -647,7 +539,7 @@ public static class Program
         Console.ForegroundColor = ConsoleColor.Red;
         Console.WriteLine($"Unknown build target: '{command}'");
         Console.ResetColor();
-        Console.WriteLine("\nDid you mean to build a specific project? Example: \x1b[1;37m./build project:Gui\x1b[0m\n");
+        Console.WriteLine("\nDid you mean to build a specific project? Example: \x1b[1;37m./build gui\x1b[0m\n");
         PrintHelp();
         return 1;
     }
@@ -675,48 +567,56 @@ public static class Program
         EnsureProcessesTerminatedOnWindows();
 
         string config = isDebug ? "Debug" : "Release";
+        var (distDir, intermediateDir) = DistManager.EnsureDistLayout(RootDir, rid, isDebug);
+
         Console.WriteLine($"\x1b[1;36m>>> Compiling Core Components ({config}, {rid})...\x1b[0m\n");
 
         // 1. Publish Service
-        int svcResult = await RunDotnetPublishAsync("src/OpenPredator.Service/OpenPredator.Service.csproj", config, rid);
+        string svcStaging = Path.Combine(RootDir, ".temp", "staging", rid, "OpenPredator.Service");
+        int svcResult = await RunDotnetPublishAsync("src/OpenPredator.Service/OpenPredator.Service.csproj", config, rid, svcStaging, isDebug);
         if (svcResult != 0) return svcResult;
+        string svcExe = OperatingSystem.IsWindows() ? "openpredator-service.exe" : "openpredator-service";
+        DistManager.DeployApp(svcStaging, distDir, intermediateDir, svcExe, isDebug);
 
         // 2. Publish CLI
-        int cliResult = await RunDotnetPublishAsync("src/OpenPredator.Cli/OpenPredator.Cli.csproj", config, rid);
+        string cliStaging = Path.Combine(RootDir, ".temp", "staging", rid, "OpenPredator.Cli");
+        int cliResult = await RunDotnetPublishAsync("src/OpenPredator.Cli/OpenPredator.Cli.csproj", config, rid, cliStaging, isDebug);
         if (cliResult != 0) return cliResult;
+        string cliExe = OperatingSystem.IsWindows() ? "openpredator.exe" : "openpredator";
+        DistManager.DeployApp(cliStaging, distDir, intermediateDir, cliExe, isDebug);
 
         // 3. Publish GUI
-        int guiResult = await RunDotnetPublishAsync("src/OpenPredator.Gui/OpenPredator.Gui.csproj", config, rid);
+        string guiStaging = Path.Combine(RootDir, ".temp", "staging", rid, "OpenPredator.Gui");
+        int guiResult = await RunDotnetPublishAsync("src/OpenPredator.Gui/OpenPredator.Gui.csproj", config, rid, guiStaging, isDebug);
         if (guiResult != 0) return guiResult;
+        string guiExe = OperatingSystem.IsWindows() ? "openpredator-gui.exe" : "openpredator-gui";
+        DistManager.DeployApp(guiStaging, distDir, intermediateDir, guiExe, isDebug);
 
-        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Binaries published to: \x1b[1;37mdist/{rid}/\x1b[0m");
+        // 4. Publish TestingSuite if --dev
+        if (isDebug)
+        {
+            Console.WriteLine("\n\x1b[1;36m>>> Compiling Testing Suite (--dev)...\x1b[0m");
+            string tuiStaging = Path.Combine(RootDir, ".temp", "staging", rid, "OpenPredator.TestingSuite");
+            int tuiResult = await RunDotnetPublishAsync("src/OpenPredator.TestingSuite/OpenPredator.TestingSuite.csproj", config, rid, tuiStaging, isDebug);
+            if (tuiResult != 0) return tuiResult;
+            string tuiExe = OperatingSystem.IsWindows() ? "openpredator-testsuite.exe" : "openpredator-testsuite";
+            DistManager.DeployApp(tuiStaging, distDir, intermediateDir, tuiExe, isDebug);
+        }
+
+        DistManager.PrintStructureTree(RootDir, distDir);
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Executables staged to: \x1b[1;37m{Path.GetRelativePath(RootDir, distDir)}\x1b[0m");
         return 0;
     }
 
-    private static async Task<int> BuildDevAsync(string rid)
+    private static async Task<int> BuildInstallerAsync(string rid, bool isDev, bool skipBuild)
     {
-        EnsureProcessesTerminatedOnWindows();
+        string mode = isDev ? "dev" : "release";
+        string distDir = Path.Combine(RootDir, "dist", mode, rid);
 
-        Console.WriteLine($"\x1b[1;36m>>> Compiling Full Development Stack with Testing Suite (Debug, {rid})...\x1b[0m\n");
-
-        int res = await BuildAllAsync(rid, isDebug: true);
-        if (res != 0) return res;
-
-        // Publish Testing Suite
-        Console.WriteLine("\n\x1b[1;36m>>> Compiling OpenPredator Testing Suite...\x1b[0m");
-        int testSuiteRes = await RunDotnetPublishAsync("src/OpenPredator.TestingSuite/OpenPredator.TestingSuite.csproj", "Debug", rid);
-        if (testSuiteRes != 0) return testSuiteRes;
-
-        Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Dev stack published to: \x1b[1;37mdist/{rid}/\x1b[0m");
-        return 0;
-    }
-
-    private static async Task<int> BuildInstallerAsync(string rid, bool skipBuild)
-    {
         if (!skipBuild)
         {
-            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
-            int buildRes = await BuildAllAsync(rid, isDebug: false);
+            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh binaries...\x1b[0m");
+            int buildRes = await BuildAllAsync(rid, isDebug: isDev);
             if (buildRes != 0) return buildRes;
             Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging installer...\x1b[0m");
         }
@@ -735,9 +635,15 @@ public static class Program
 
             string version = GetCurrentVersion();
             string fourPartVer = GetFourPartVersion();
+            string outputFilename = isDev
+                ? $"OpenPredator-v{version}-{rid}-Setup-dev"
+                : $"OpenPredator-v{version}-{rid}-Setup";
+
             Console.WriteLine($"Compiling Inno Setup script with: {isccPath} (v{version} / {fourPartVer})");
             string issPath = Path.Combine(RootDir, "builder", "OpenPredatorSetup.iss");
-            int isccExit = await RunProcessAsync(isccPath, $"/DMyAppVersion=\"{version}\" /DVersionInfoVersion=\"{fourPartVer}\" \"{issPath}\"", RootDir);
+
+            string isccArgs = $"/DMyAppVersion=\"{version}\" /DVersionInfoVersion=\"{fourPartVer}\" /DSourceDir=\"{distDir}\" /DOutputFilename=\"{outputFilename}\" /DIsDev=\"{(isDev ? "1" : "0")}\" \"{issPath}\"";
+            int isccExit = await RunProcessAsync(isccPath, isccArgs, RootDir);
             if (isccExit != 0)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -746,47 +652,40 @@ public static class Program
                 return isccExit;
             }
 
-            Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Installer package created in: \x1b[1;37mdist/installer/\x1b[0m");
+            Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Installer package created: \x1b[1;37mdist/installer/{outputFilename}.exe\x1b[0m");
             return 0;
         }
         else
         {
-            // Linux distribution tarball
-            string version = GetCurrentVersion();
-            string distDir = Path.Combine(RootDir, "dist", rid);
-            string outDir = Path.Combine(RootDir, "dist", "installer");
-            Directory.CreateDirectory(outDir);
-            string tarFile = Path.Combine(outDir, $"OpenPredator-v{version}-{rid}.tar.gz");
-
-            Console.WriteLine($"Creating distribution archive: {tarFile}");
-            int tarExit = await RunProcessAsync("tar", $"-czf \"{tarFile}\" -C \"{distDir}\" .", RootDir);
-            if (tarExit == 0)
-            {
-                Console.WriteLine($"\n\x1b[1;32m[OK]\x1b[0m Linux archive created at: \x1b[1;37m{tarFile}\x1b[0m");
-                return 0;
-            }
-            return tarExit;
+            // Linux: standalone portable archive is the clean standard distribution
+            Console.WriteLine("\x1b[1;36m[Notice]\x1b[0m Linux targets use standalone portable archives. Creating portable package...");
+            return await BuildPortableAsync(rid, isDev: isDev, skipBuild: true);
         }
     }
 
-    private static async Task<int> BuildPortableAsync(string rid, bool skipBuild)
+    private static async Task<int> BuildPortableAsync(string rid, bool isDev, bool skipBuild)
     {
+        string mode = isDev ? "dev" : "release";
+        string distDir = Path.Combine(RootDir, "dist", mode, rid);
+
         if (!skipBuild)
         {
-            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh release binaries...\x1b[0m");
-            int buildRes = await BuildAllAsync(rid, isDebug: false);
+            Console.WriteLine("\x1b[1;36m[Step 1/2] Compiling fresh binaries...\x1b[0m");
+            int buildRes = await BuildAllAsync(rid, isDebug: isDev);
             if (buildRes != 0) return buildRes;
-            Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging portable ZIP...\x1b[0m");
+            Console.WriteLine("\n\x1b[1;36m[Step 2/2] Packaging portable archive...\x1b[0m");
         }
 
         string version = GetCurrentVersion();
-        string distBinDir = Path.Combine(RootDir, "dist", rid);
         string portableOutDir = Path.Combine(RootDir, "dist", "portable");
         Directory.CreateDirectory(portableOutDir);
 
-        string zipName = $"OpenPredator-v{version}-{rid}-portable.zip";
+        string zipName = isDev
+            ? $"OpenPredator-v{version}-{rid}-portable-dev.zip"
+            : $"OpenPredator-v{version}-{rid}-portable.zip";
+
         string zipPath = Path.Combine(portableOutDir, zipName);
-        string stagingDir = Path.Combine(RootDir, ".temp", "portable_staging");
+        string stagingDir = Path.Combine(RootDir, ".temp", $"portable_staging_{mode}_{rid}");
 
         if (Directory.Exists(stagingDir))
         {
@@ -794,17 +693,33 @@ public static class Program
         }
         Directory.CreateDirectory(stagingDir);
 
-        // 1. Copy Executables
-        if (Directory.Exists(distBinDir))
+        // 1. Copy Primary Executables
+        if (Directory.Exists(distDir))
         {
-            foreach (var file in Directory.GetFiles(distBinDir))
+            foreach (var file in Directory.GetFiles(distDir))
             {
                 string fn = Path.GetFileName(file);
                 File.Copy(file, Path.Combine(stagingDir, fn), true);
             }
         }
 
-        // 2. Copy Documentation
+        // 2. In Dev builds, copy Intermediate/ containing .pdb symbols
+        if (isDev)
+        {
+            string intermediateSrc = Path.Combine(distDir, "Intermediate");
+            if (Directory.Exists(intermediateSrc))
+            {
+                string intermediateDest = Path.Combine(stagingDir, "Intermediate");
+                Directory.CreateDirectory(intermediateDest);
+                foreach (var file in Directory.GetFiles(intermediateSrc))
+                {
+                    string fn = Path.GetFileName(file);
+                    File.Copy(file, Path.Combine(intermediateDest, fn), true);
+                }
+            }
+        }
+
+        // 3. Copy Documentation
         string licenseSrc = Path.Combine(RootDir, "LICENSE");
         if (File.Exists(licenseSrc))
         {
@@ -817,8 +732,8 @@ public static class Program
             File.Copy(readmeSrc, Path.Combine(stagingDir, "README.txt"), true);
         }
 
-        // 3. Copy Windows Service Helper Scripts from builder directory
-        if (rid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
+        // 4. Copy Windows Service Helper Scripts
+        if (OperatingSystem.IsWindows() || rid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
         {
             string installScriptSrc = Path.Combine(RootDir, "builder", "install-service.bat");
             if (File.Exists(installScriptSrc))
@@ -833,7 +748,7 @@ public static class Program
             }
         }
 
-        // 4. Create Zip Archive
+        // 5. Create Zip Archive
         if (File.Exists(zipPath))
         {
             File.Delete(zipPath);
@@ -842,28 +757,168 @@ public static class Program
         ZipFile.CreateFromDirectory(stagingDir, zipPath, CompressionLevel.Optimal, false);
         Directory.Delete(stagingDir, true);
 
-        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Portable ZIP package created: \x1b[1;37mdist/portable/{zipName}\x1b[0m");
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Portable package created: \x1b[1;37mdist/portable/{zipName}\x1b[0m");
         return 0;
     }
 
-    private static async Task<int> BuildPackAsync(string rid)
+    private static async Task<int> BuildPackAsync(string rid, bool isDev)
     {
-        Console.WriteLine("\x1b[1;36m[1/3] Compiling fresh release binaries...\x1b[0m");
-        int buildRes = await BuildAllAsync(rid, isDebug: false);
+        Console.WriteLine($"\x1b[1;36m[1/3] Compiling complete stack (Dev: {isDev}, Runtime: {rid})...\x1b[0m");
+        int buildRes = await BuildAllAsync(rid, isDebug: isDev);
         if (buildRes != 0) return buildRes;
 
-        Console.WriteLine("\n\x1b[1;36m[2/3] Packaging installer...\x1b[0m");
-        int instRes = await BuildInstallerAsync(rid, skipBuild: true);
+        Console.WriteLine("\n\x1b[1;36m[2/3] Packaging installer / system package...\x1b[0m");
+        int instRes = await BuildInstallerAsync(rid, isDev: isDev, skipBuild: true);
         if (instRes != 0) return instRes;
 
-        Console.WriteLine("\n\x1b[1;36m[3/3] Packaging portable ZIP...\x1b[0m");
-        int portRes = await BuildPortableAsync(rid, skipBuild: true);
+        Console.WriteLine("\n\x1b[1;36m[3/3] Packaging portable standalone archive...\x1b[0m");
+        int portRes = await BuildPortableAsync(rid, isDev: isDev, skipBuild: true);
         if (portRes != 0) return portRes;
 
         Console.WriteLine("\n\x1b[1;36m>>> Computing SHA256 Checksums for Release Artifacts...\x1b[0m");
         GenerateSha256Sums();
 
         return 0;
+    }
+
+    private static async Task<int> BuildRunAsync(string rid, bool isDev)
+    {
+        Console.WriteLine($"\x1b[1;36m>>> Compiling OpenPredator Stack for Run (Dev: {isDev}, Runtime: {rid})...\x1b[0m\n");
+        int buildRes = await BuildAllAsync(rid, isDebug: isDev);
+        if (buildRes != 0) return buildRes;
+
+        string mode = isDev ? "dev" : "release";
+        string distDir = Path.Combine(RootDir, "dist", mode, rid);
+
+        Console.WriteLine("\n\x1b[1;32m>>> Launching Elevated Service & Developer Shell...\x1b[0m\n");
+
+        if (OperatingSystem.IsWindows())
+        {
+            string serviceExe = Path.Combine(distDir, "openpredator-service.exe");
+            if (File.Exists(serviceExe))
+            {
+                Console.WriteLine($"  [Elevated Service] Spawning {Path.GetFileName(serviceExe)} in Administrator console...");
+                var servicePsi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/k title OpenPredator Service ^& \"\"{serviceExe}\" --run\"",
+                    UseShellExecute = true,
+                    Verb = "RunAs"
+                };
+                try
+                {
+                    Process.Start(servicePsi);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  [Warning] Failed to spawn elevated service window: {ex.Message}");
+                }
+            }
+
+            Console.WriteLine($"  [Dist Shell] Spawning shell inside {distDir}...");
+            var shellPsi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/k title OpenPredator Shell ^& cd /d \"{distDir}\"",
+                UseShellExecute = true
+            };
+            try
+            {
+                Process.Start(shellPsi);
+            }
+            catch { }
+        }
+        else
+        {
+            string serviceExe = Path.Combine(distDir, "openpredator-service");
+            string? terminal = DetectLinuxTerminal();
+            if (string.IsNullOrEmpty(terminal))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("\n[Error] No terminal emulator detected. Please set the $TERMINAL or $TERM_PROGRAM environment variable (e.g. export TERMINAL=kitty).\n");
+                Console.ResetColor();
+                return 1;
+            }
+
+            if (File.Exists(serviceExe))
+            {
+                Console.WriteLine($"  [Elevated Service] Spawning {Path.GetFileName(serviceExe)} via sudo in {terminal}...");
+                LaunchLinuxTerminal(terminal, $"sudo \"{serviceExe}\" --run");
+            }
+
+            Console.WriteLine($"  [Dist Shell] Spawning shell in {terminal} at {distDir}...");
+            LaunchLinuxTerminal(terminal, null, workingDir: distDir);
+        }
+
+        Console.WriteLine("\x1b[1;32m[OK]\x1b[0m Runtime environment launched successfully.");
+        return 0;
+    }
+
+    private static string? DetectLinuxTerminal()
+    {
+        string? terminalEnv = Environment.GetEnvironmentVariable("TERMINAL");
+        if (!string.IsNullOrEmpty(terminalEnv) && IsCommandAvailable(terminalEnv))
+        {
+            return terminalEnv;
+        }
+
+        string? termProg = Environment.GetEnvironmentVariable("TERM_PROGRAM");
+        if (!string.IsNullOrEmpty(termProg) && IsCommandAvailable(termProg))
+        {
+            return termProg;
+        }
+
+        return null;
+    }
+
+    private static bool IsCommandAvailable(string cmd)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "which",
+                Arguments = cmd,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            };
+            using var proc = Process.Start(psi);
+            proc?.WaitForExit(500);
+            return proc?.ExitCode == 0;
+        }
+        catch { return false; }
+    }
+
+    private static void LaunchLinuxTerminal(string terminal, string? commandToRun, string? workingDir = null)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = terminal,
+            UseShellExecute = true,
+            WorkingDirectory = workingDir ?? RootDir
+        };
+
+        if (!string.IsNullOrEmpty(commandToRun))
+        {
+            if (terminal.Contains("gnome-terminal") || terminal.Contains("mate-terminal") || terminal.Contains("xfce4-terminal"))
+            {
+                psi.Arguments = $"-- bash -c \"{commandToRun}; exec bash\"";
+            }
+            else
+            {
+                psi.Arguments = $"-e bash -c \"{commandToRun}; exec bash\"";
+            }
+        }
+
+        try
+        {
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  \x1b[1;33m[Warning]\x1b[0m Could not spawn terminal '{terminal}': {ex.Message}");
+        }
     }
 
     private static void GenerateSha256Sums()
@@ -958,10 +1013,25 @@ public static class Program
         }
     }
 
-    private static async Task<int> RunDotnetPublishAsync(string projectRelativePath, string configuration, string rid)
+    private static async Task<int> RunDotnetPublishAsync(string projectRelativePath, string configuration, string rid, string stagingDir, bool isDebug)
     {
+        if (Directory.Exists(stagingDir))
+        {
+            try { Directory.Delete(stagingDir, true); } catch { }
+        }
+        Directory.CreateDirectory(stagingDir);
+
         string projectPath = Path.Combine(RootDir, projectRelativePath);
-        string args = $"publish \"{projectPath}\" -c {configuration} -r {rid} --self-contained true";
+        string args = $"publish \"{projectPath}\" -c {configuration} -r {rid} -o \"{stagingDir}\" --self-contained true";
+
+        if (!isDebug)
+        {
+            args += " -p:StripSymbols=true -p:DebugType=none";
+        }
+        else
+        {
+            args += " -p:DebugType=portable";
+        }
 
         Console.WriteLine($"\x1b[90m$ dotnet {args}\x1b[0m");
         return await RunProcessAsync("dotnet", args, RootDir);
@@ -1019,7 +1089,6 @@ public static class Program
             if (File.Exists(path)) return path;
         }
 
-        // Check if ISCC is in PATH
         string? envPath = Environment.GetEnvironmentVariable("PATH");
         if (!string.IsNullOrEmpty(envPath))
         {
