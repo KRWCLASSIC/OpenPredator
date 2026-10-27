@@ -127,10 +127,13 @@ jobs:
     name: Create Nightly Draft Release
     needs: [build-windows, build-linux]
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '!!') }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create Staging Directory
         run: mkdir -p release_assets
@@ -150,7 +153,7 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Determine Version & Tag
+      - name: Determine Version, Tag & Release Notes
         id: vars
         run: |
           VERSION=$(grep -oPm1 "(?<=<Version>)[^<]+" Directory.Build.props || echo "1.1.0")
@@ -159,6 +162,25 @@ jobs:
           TITLE="OpenPredator Nightly ${VERSION} (${SHORT_SHA})"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="nightly*" 2>/dev/null || git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            COMMITS=$(git log "${PREV_TAG}..HEAD" --pretty=format:"* [%s](https://github.com/${{ github.repository }}/commit/%H)")
+            CHANGELOG_URL="https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${TAG}"
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            COMMITS=$(git log -n 5 --pretty=format:"* [%s](https://github.com/${{ github.repository }}/commit/%H)")
+            CHANGELOG_URL="https://github.com/${{ github.repository }}/commits/${TAG}"
+          fi
+
+          {
+            echo "Development snapshot from commit [\`${SHORT_SHA}\`](https://github.com/${{ github.repository }}/commit/${GITHUB_SHA}):"
+            echo ""
+            echo "${COMMITS}"
+            echo ""
+            echo "**Full Changelog**: ${CHANGELOG_URL}"
+          } > release_body.md
 
       - name: Clean up older unpublished draft releases
         env:
@@ -178,4 +200,4 @@ jobs:
           draft: true
           prerelease: true
           files: release_assets/*
-          generate_release_notes: true
+          body_path: release_body.md
