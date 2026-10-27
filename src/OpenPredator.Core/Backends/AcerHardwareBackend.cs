@@ -92,6 +92,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 FanMode effectiveCpuMode = cpuMode ?? (mode == FanMode.Custom ? (cpuAuto ? FanMode.Auto : FanMode.Custom) : mode);
@@ -168,6 +169,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // 1. APGeAction.SetFunction(0x00010007 for ON, 0x00000007 for OFF)
@@ -220,6 +222,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 ulong input = (ulong)((Math.Clamp(percentage, 0, 100) << 8) | (fanIndex & 0xFF));
@@ -238,6 +241,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // Setting ID 0x0B (11) is Operation Mode in AcerGamingFunction.SetGamingMiscSetting
@@ -257,6 +261,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 // Brightness setting (0-100)
@@ -292,6 +297,7 @@ public abstract class AcerHardwareBackend : IHardwareBackend
     {
         return await Task.Run(() =>
         {
+            if (!IsSupported) return false;
             try
             {
                 int clamped = Math.Clamp(brightnessPercentage, 0, 100);

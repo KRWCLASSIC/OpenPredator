@@ -201,10 +201,21 @@ public static class BmofReader
 
     private static string GetCacheFilePath()
     {
-        string? home = Environment.GetEnvironmentVariable("HOME");
-        string dir = !string.IsNullOrEmpty(home)
-            ? Path.Combine(home, ".config", "openpredator")
-            : "/etc/openpredator";
+        string dir;
+        if (OperatingSystem.IsWindows())
+        {
+            dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "OpenPredator");
+        }
+        else
+        {
+            string? home = Environment.GetEnvironmentVariable("HOME");
+            if (string.IsNullOrEmpty(home))
+            {
+                home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
+
+            dir = Path.Combine(home, ".config", "openpredator");
+        }
 
         try { Directory.CreateDirectory(dir); } catch { }
         return Path.Combine(dir, "wmi_methods.json");

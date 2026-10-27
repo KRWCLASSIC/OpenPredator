@@ -189,7 +189,7 @@ public static class Program
         Console.WriteLine("  pack                Full release packaging (Installer + Portable ZIP + SHA256SUMS)");
         Console.WriteLine("  dev                 Debug build including test suite (openpredator-testsuite)");
         Console.WriteLine("  clean               Clean all dist/, .temp/, artifacts/, bin/, and obj/ directories");
-        Console.WriteLine("  version [new_ver]   Inspect or bump version across Directory.Build.props & Inno Setup");
+        Console.WriteLine("  version [new_ver]   Inspect or bump version in Directory.Build.props (auto-propagated to binaries & installer)");
         Console.WriteLine("  help                Display this help screen\n");
         Console.WriteLine("Target Prefix & Targeted Build Examples:");
         Console.WriteLine("  build project:Gui         Quick release build of OpenPredator.Gui -> dist/win-x64/");
@@ -578,7 +578,6 @@ public static class Program
     private static int HandleVersionCommand(string? newVersion)
     {
         string propsPath = Path.Combine(RootDir, "Directory.Build.props");
-        string issPath = Path.Combine(RootDir, "builder", "OpenPredatorSetup.iss");
 
         if (string.IsNullOrWhiteSpace(newVersion))
         {
@@ -588,14 +587,9 @@ public static class Program
                 var content = File.ReadAllText(propsPath);
                 var mVer = System.Text.RegularExpressions.Regex.Match(content, @"<Version>(.*?)</Version>");
                 var mAss = System.Text.RegularExpressions.Regex.Match(content, @"<AssemblyVersion>(.*?)</AssemblyVersion>");
-                Console.WriteLine($"  Directory.Build.props : Version={mVer.Groups[1].Value}, AssemblyVersion={mAss.Groups[1].Value}");
-            }
-            if (File.Exists(issPath))
-            {
-                var content = File.ReadAllText(issPath);
-                var mIss = System.Text.RegularExpressions.Regex.Match(content, @"#define MyAppVersion ""(.*?)""");
-                var mInfo = System.Text.RegularExpressions.Regex.Match(content, @"VersionInfoVersion=(.*)");
-                Console.WriteLine($"  OpenPredatorSetup.iss : MyAppVersion={mIss.Groups[1].Value}, VersionInfoVersion={mInfo.Groups[1].Value}");
+                var mFile = System.Text.RegularExpressions.Regex.Match(content, @"<FileVersion>(.*?)</FileVersion>");
+                Console.WriteLine($"  Directory.Build.props : Version={mVer.Groups[1].Value}, AssemblyVersion={mAss.Groups[1].Value}, FileVersion={mFile.Groups[1].Value}");
+                Console.WriteLine($"  OpenPredatorSetup.iss : (Inherits dynamically via /DMyAppVersion & /DVersionInfoVersion during build)");
             }
             Console.WriteLine("\n\x1b[90mTo update version: build version <new_version> (e.g. 1.0.1 or 1.0.1.1)\x1b[0m\n");
             return 0;
@@ -632,7 +626,7 @@ public static class Program
 
         Console.WriteLine($"\x1b[1;36m>>> Updating Project Version to {semVer} ({fourPartVer})...\x1b[0m\n");
 
-        // 1. Update Directory.Build.props
+        // 1. Update Directory.Build.props (Single Source of Truth)
         if (File.Exists(propsPath))
         {
             string content = File.ReadAllText(propsPath);
@@ -643,16 +637,7 @@ public static class Program
             Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Updated {Path.GetRelativePath(RootDir, propsPath)}");
         }
 
-        // 2. Update OpenPredatorSetup.iss
-        if (File.Exists(issPath))
-        {
-            string content = File.ReadAllText(issPath);
-            content = System.Text.RegularExpressions.Regex.Replace(content, @"#define MyAppVersion "".*?""", $"#define MyAppVersion \"{semVer}\"");
-            content = System.Text.RegularExpressions.Regex.Replace(content, @"VersionInfoVersion=.*", $"VersionInfoVersion={fourPartVer}");
-            File.WriteAllText(issPath, content);
-            Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m Updated {Path.GetRelativePath(RootDir, issPath)}");
-        }
-
+        Console.WriteLine($"\x1b[1;32m[OK]\x1b[0m OpenPredatorSetup.iss dynamically inherits from build props at compile time.");
         Console.WriteLine($"\n\x1b[1;32m[Success]\x1b[0m All version fields updated to: \x1b[1;37m{semVer}\x1b[0m (Assembly/File: \x1b[1;36m{fourPartVer}\x1b[0m)\n");
         return 0;
     }

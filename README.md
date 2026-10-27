@@ -7,7 +7,7 @@ High-performance, lightweight, zero-bloat hardware control suite for Acer gaming
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
 [![NativeAOT](https://img.shields.io/badge/Runtime-NativeAOT-success.svg)]()
-[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)]()
 
 </div>
 
@@ -15,8 +15,8 @@ High-performance, lightweight, zero-bloat hardware control suite for Acer gaming
 
 > [!WARNING]
 > **Work in Progress Notice:**
-> - **Graphical User Interface (GUI)**: The standalone GUI client is currently under active development. The background service daemon (`openpredator-service`) and CLI utility (`openpredator`) should be fully functional.
-> - **Linux Support**: Basic Linux abstractions exist in `Core`, but active development and physical testing for Linux are on the back burner for now.
+> - **Graphical User Interface (GUI)**: The standalone GUI client is currently under active development. The background service daemon (`openpredator-service`) and CLI utility (`openpredator`) are fully functional.
+> - **Linux Support**: Linux hardware control (ACPI WMI, fans, telemetry, and power modes) is functional and verified on physical hardware. However, installation and service setup are currently manual (standalone binaries work; automated installers are planned).
 
 ---
 
@@ -47,7 +47,7 @@ OpenPredator's daemon is also wire-compatible with the OEM named pipe interface 
 | :--- | :---: | :--- |
 | Windows 11 | ✅ | Tested on Windows 11 (25H2) |
 | Windows 10 | ❓ | Expected working (uses identical ACPI WMI drivers) |
-| Linux | 🚧 | In active development (ACPI backend and Unix sockets implemented; physical testing in progress) |
+| Linux | ✅ | Tested on MX Linux (23.6). Manual binary deployment for now. |
 
 ---
 
@@ -131,44 +131,107 @@ openpredator config apply
 
 ---
 
+## Linux Support & Manual Setup
+
+Linux support is fully implemented and verified on real hardware, providing real-time hardware telemetry, fan speed and curve control, power modes, and keyboard backlight management through ACPI firmware calls. While automated packaging (e.g., `.deb`/`.rpm` or systemd service packages) is planned, binaries are fully usable right now with manual execution.
+
+### 1. Prerequisites (Kernel Modules)
+OpenPredator communicates directly with Acer ACPI WMI tables on Linux via `/proc/acpi/call` and decompresses the BIOS BMOF table via `wmi-bmof`.
+
+**Debian / Ubuntu / MX Linux / Linux Mint:**
+```bash
+sudo apt update && sudo apt install -y acpi-call-dkms
+sudo modprobe acpi_call
+sudo modprobe wmi-bmof
+
+# Verify interfaces are loaded:
+ls -l /proc/acpi/call
+ls -l /sys/bus/wmi/devices/*/bmof
+```
+
+**Fedora / RHEL:**
+```bash
+sudo dnf install -y akmod-acpi_call
+sudo modprobe acpi_call
+sudo modprobe wmi-bmof
+```
+
+**Arch Linux:**
+```bash
+sudo pacman -S acpi_call-dkms
+sudo modprobe acpi_call
+sudo modprobe wmi-bmof
+```
+
+### 2. Running OpenPredator on Linux
+
+#### Option A: Background Service + Unprivileged CLI / GUI (Recommended)
+Run the service daemon as root. It creates a Unix domain socket (`/tmp/predatorsense_service_namedpipe`) with open permissions (`0666`) and caches discovered WMI methods to `~/.config/openpredator/wmi_methods.json`, allowing non-root users and desktop sessions to interact with hardware safely without `sudo`:
+
+```bash
+# Terminal 1: Start the service daemon
+sudo ./openpredator-service
+
+# Terminal 2: Run commands as a regular user
+./openpredator watch                 # Live dashboard
+./openpredator fan max               # 100% fan speed
+./openpredator fan auto -c           # Auto curve with CoolBoost
+./openpredator mode perf             # Switch power mode
+./openpredator-gui                   # Desktop GUI
+```
+
+#### Option B: Standalone CLI (Direct Hardware Access)
+If the background service is not running, the CLI can interact with hardware directly, but requires root privileges to write to `/proc/acpi/call`:
+
+```bash
+sudo ./openpredator status
+sudo ./openpredator fan max
+sudo ./openpredator fan auto
+sudo ./openpredator coolboost on
+sudo ./openpredator mode perf
+sudo ./openpredator watch
+```
+
+---
+
 ## Building from Source
 
 ### Prerequisites
 - [.NET 10.0 SDK](https://dotnet.microsoft.com/)
-- Visual Studio 2022 Desktop development with C++ (required for NativeAOT compilation on Windows)
+- Native compilation toolchain (required for NativeAOT: Visual Studio C++ on Windows; `clang`, `build-essential`, `zlib1g-dev` on Linux)
 - [Inno Setup 6](https://jrsoftware.org/isdl.php) (optional, for compiling Windows installer package)
 
 ### Build Pipeline (`builder`)
 
-OpenPredator features a cross-platform, zero-dependency C# build runner located in `builder/`. You can invoke it via the root wrappers (`build.bat` on Windows, `./build.sh` on Linux) or `dotnet run --project builder`:
+OpenPredator features a cross-platform, zero-dependency C# build runner located in `builder/`. You can invoke it via the root wrappers (`./build` / `build.bat` on Windows, `./build` / `./build.sh` on Linux) or `dotnet run --project builder`:
 
-```cmd
+```bash
 # 1. Release build for current OS (dist/<rid>/) - excludes test suite
-build.bat
-# or: build.bat all
+./build
+# or: ./build all
 
 # 2. Release build + package Windows Setup Installer (dist/installer/)
-build.bat installer
+./build installer
 
-# 3. Release build + package Portable standalone ZIP (dist/portable/)
-build.bat portable
+# 3. Release build + package Portable standalone archive (dist/portable/)
+./build portable
 
-# 4. Full Release Packaging (Installer + Portable ZIP + SHA256SUMS manifest)
-build.bat pack
+# 4. Full Release Packaging (Installer + Portable archive + SHA256SUMS manifest)
+./build pack
 
 # 5. Development debug build with interactive Testing Suite included
-build.bat dev
+./build dev
 
 # 6. Clean all build outputs, .temp caches, and bin/obj directories
-build.bat clean
+./build clean
 
 # 7. Version management
-build.bat version           # Inspect current version
-build.bat version 1.0.1     # Bump version across build props & installer
+./build version           # Inspect current version
+./build version 1.0.1     # Bump version across build props & installer
 
 # 8. Explicit OS target prefixes
-build.bat windows:pack
-build.bat linux:all
+./build windows:pack
+./build linux:all
 ```
 
 ---

@@ -21,8 +21,23 @@ public static class LinuxAcpiCall
     private static string? _genericMethodName = null;
     private static bool _discoveryAttempted = false;
     private static readonly object _syncLock = new();
-
-    public static bool IsAvailable => File.Exists(AcpiCallPath);
+    public static bool IsAvailable
+    {
+        get
+        {
+            if (!File.Exists(AcpiCallPath)) return false;
+            if (ProcessElevation.IsElevated) return true;
+            try
+            {
+                using var fs = File.Open(AcpiCallPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
 
     public static ulong ExecuteGamingFunction(string methodName, ulong input)
     {
