@@ -155,19 +155,17 @@ public sealed class HardwareManager
 
     public async Task<FanMode> GetFanModeAsync()
     {
-        if (OperatingSystem.IsWindows())
+        try
         {
-            try
-            {
-                ulong res = await Backend.InvokeGamingFunctionAsync("GetGamingFanBehavior", 0UL);
-                uint cpuMode = (uint)((res >> 16) & 0x3);
-                uint gpuMode = (uint)((res >> 22) & 0x3);
-                if (cpuMode == 1 && gpuMode == 1) return FanMode.Auto;
-                if (cpuMode == 2 && gpuMode == 2) return FanMode.Max;
-                if (cpuMode > 0 || gpuMode > 0) return FanMode.Custom;
-            }
-            catch { }
+            ulong res = await Backend.InvokeGamingFunctionAsync("GetGamingFanBehavior", 0UL);
+            uint cpuMode = (uint)((res >> 16) & 0x3);
+            uint gpuMode = (uint)((res >> 22) & 0x3);
+            if (cpuMode == 1 && gpuMode == 1) return FanMode.Auto;
+            if (cpuMode == 2 && gpuMode == 2) return FanMode.Max;
+            if (cpuMode > 0 || gpuMode > 0) return FanMode.Custom;
         }
+        catch { }
+
         return CurrentFanConfig.Mode;
     }
 

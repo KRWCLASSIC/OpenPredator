@@ -187,7 +187,7 @@ public static class CapabilityProbe
         {
             ulong profRaw = backend.InvokeGamingFunctionSync("GetGamingProfile", 0UL);
             diag.AppendLine($"[Profile] GetGamingProfile(0) -> 0x{profRaw:X16}");
-            if ((profRaw & 0xFF) == 0)
+            if ((profRaw & 0xFF) == 0 && profRaw > 0)
             {
                 // Status 0 indicates GetGamingProfile is supported by EC firmware.
                 supportsWinKeyLock = true;

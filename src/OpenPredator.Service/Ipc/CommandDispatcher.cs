@@ -94,6 +94,23 @@ public class CommandDispatcher
                     ulong profInput = args[0].Length >= 8
                         ? BinaryPrimitives.ReadUInt64LittleEndian(args[0])
                         : BinaryPrimitives.ReadUInt32LittleEndian(args[0]);
+
+                    // WinKeyLock toggle: ((locked ? 1 : 0) << 24) | 2
+                    if ((profInput & 0xFF) == 2)
+                    {
+                        bool locked = ((profInput >> 24) & 1) == 1;
+                        await _hardware.SetWinKeyLockAsync(locked);
+                        return PacketSerializer.SerializeResponse(0);
+                    }
+
+                    // LCD Overdrive toggle: (enabled ? 0x1000000000000UL | 16UL : 16UL)
+                    if ((profInput & 0xFF) == 16)
+                    {
+                        bool enabled = ((profInput >> 48) & 1) == 1;
+                        await _hardware.SetLcdOverdriveAsync(enabled);
+                        return PacketSerializer.SerializeResponse(0);
+                    }
+
                     ulong res = await _hardware.Backend.InvokeGamingFunctionAsync("SetGamingProfile", profInput);
                     return PacketSerializer.SerializeResponse(res);
                 }
@@ -130,7 +147,7 @@ public class CommandDispatcher
                 {
                     uint brightnessRaw = BinaryPrimitives.ReadUInt32LittleEndian(args[0]);
                     int brightness = (int)(brightnessRaw > 255 ? ((brightnessRaw >> 16) & 0xFF) : (brightnessRaw & 0xFF));
-                    await _hardware.Backend.SetKbBacklightAsync(brightness);
+                    await _hardware.SetKbBacklightAsync(brightness);
                 }
                 return PacketSerializer.SerializeResponse(0);
 
@@ -189,11 +206,14 @@ public class CommandDispatcher
                         return PacketSerializer.SerializeResponse(ok ? 0 : 1);
                     }
 
-                    // Keyboard Backlight (Function ID 2)
+                    // Keyboard Backlight & Sleep Timer (Function ID 2)
                     if ((wmiInput & 0xFF) == 2)
                     {
                         int brightness = (int)((wmiInput >> 32) & 0xFF);
+                        bool timeout = ((wmiInput >> 40) & 0xFF) == 30;
                         await _hardware.SetKbBacklightAsync(brightness);
+                        await _hardware.SetKbTimeoutAsync(timeout);
+                        return PacketSerializer.SerializeResponse(0);
                     }
 
                     ulong res = await _hardware.Backend.InvokeGenericMethodAsync("SetFunction", wmiInput);
